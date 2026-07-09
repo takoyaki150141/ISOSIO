@@ -1,12 +1,10 @@
-#ifndef MEMORY_SCANNER_HPP
-#define MEMORY_SCANNER_HPP
-
+#pragma once
 #include <vector>
 #include <string>
 #include <cstdint>
 #include <mach/mach.h>
 
-enum class ValueType {
+enum ValueType {
     Type_i32,
     Type_i64,
     Type_Float,
@@ -14,9 +12,9 @@ enum class ValueType {
 };
 
 struct MemoryRegion {
-    uintptr_t start;
-    uintptr_t end;
-    size_t size;
+    vm_address_t start;
+    vm_address_t end;
+    vm_size_t size;
     vm_prot_t protection;
 };
 
@@ -38,32 +36,24 @@ public:
         return instance;
     }
 
-    // Scan operations
+    std::vector<MemoryRegion> getWritableRegions();
     bool firstScan(ValueType type, const std::string& valueStr);
     bool nextScan(const std::string& valueStr);
     bool modifyValue(uintptr_t address, ValueType type, const std::string& valueStr);
-    
-    // Value locking
     void lockValue(uintptr_t address, ValueType type, const std::string& valueStr);
     void unlockValue(uintptr_t address);
-    void updateLockedValues(); // Call periodically to freeze values
-
-    // Getters
-    const std::vector<ScanResult>& getResults() const { return results; }
-    const std::vector<LockedValue>& getLockedValues() const { return lockedValues; }
+    void updateLockedValues();
     void clear();
 
-private:
-    MemoryScanner() = default;
-    ~MemoryScanner() = default;
-    MemoryScanner(const MemoryScanner&) = delete;
-    MemoryScanner& operator=(const MemoryScanner&) = delete;
+    std::vector<ScanResult>& getResults() { return results; }
 
-    std::vector<MemoryRegion> getWritableRegions();
-    
+private:
+    MemoryScanner() {}
+    ~MemoryScanner() {}
+    MemoryScanner(const MemoryScanner&);
+    MemoryScanner& operator=(const MemoryScanner&);
+
     std::vector<ScanResult> results;
     std::vector<LockedValue> lockedValues;
-    ValueType currentType = ValueType::Type_i32;
+    ValueType currentType;
 };
-
-#endif // MEMORY_SCANNER_HPP
