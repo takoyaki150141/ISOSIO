@@ -5,7 +5,7 @@ on:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
-  workflow_dispatch: # Allows manual trigger from the GitHub UI
+  workflow_dispatch:
 
 jobs:
   build:
@@ -19,20 +19,32 @@ jobs:
         with:
           cache: true
 
+      - name: Ultra Clean & Debug
+        run: |
+          rm -rf .theos/ packages/ obj/ build_output/
+          find . -name "*.o" -delete
+          find . -name "*.dylib" -delete
+          
+          echo "=== Makefile ==="
+          cat Makefile
+          echo ""
+          echo "=== src/main.mm first 30 lines ==="
+          head -n 30 src/main.mm
+          echo ""
+          echo "=== All @class declarations ==="
+          grep -n "@class" src/main.mm || echo "No @class found"
+          echo ""
+          echo "=== All OverlayWindow references ==="
+          grep -n "OverlayWindow" src/main.mm
+
       - name: Build Project
         run: |
-          # Build a clean release package
           make clean
           make package FINALPACKAGE=1
           
-          # Create a directory to gather artifacts for download
           mkdir -p build_output
-          
-          # Find and copy the compiled .dylib file
-          # Theos outputs it into .theos/obj/ or .theos/obj/debug/ depending on settings
           find .theos/obj/ -name "MyGameCheat.dylib" -exec cp {} build_output/ \;
           
-          # Copy the packaged .deb file
           if [ -d "packages" ]; then
             cp packages/*.deb build_output/
           fi
