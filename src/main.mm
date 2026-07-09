@@ -216,6 +216,11 @@ static OverlayWindow *gOverlayWindow = nil;
         self.windowLevel = UIWindowLevelAlert + 100;
         self.backgroundColor = [UIColor clearColor];
         
+        // iOS 15+ 対応: rootViewController を設定
+        UIViewController *rootVC = [[UIViewController alloc] init];
+        rootVC.view.backgroundColor = [UIColor clearColor];
+        self.rootViewController = rootVC;
+        
         self.btnFloat = [UIButton buttonWithType:UIButtonTypeCustom];
         self.btnFloat.frame = self.bounds;
         self.btnFloat.backgroundColor = [UIColor colorWithRed:0.05 green:0.05 blue:0.08 alpha:0.85];
@@ -263,6 +268,11 @@ static OverlayWindow *gOverlayWindow = nil;
     if (self) {
         self.windowLevel = UIWindowLevelAlert + 99;
         self.backgroundColor = [UIColor clearColor];
+        
+        // iOS 15+ 対応: rootViewController を設定
+        UIViewController *rootVC = [[UIViewController alloc] init];
+        rootVC.view.backgroundColor = [UIColor clearColor];
+        self.rootViewController = rootVC;
         
         WKWebViewConfiguration *config = [[WKWebViewConfiguration alloc] init];
         self.msgHandler = [[CheatEngineMessageHandler alloc] init];
