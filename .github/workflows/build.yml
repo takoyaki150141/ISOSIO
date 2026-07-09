@@ -14,37 +14,48 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Theos
-        uses: beerpiss/theos-action@v1
-        with:
-          cache: true
-
-      - name: Ultra Clean & Debug
+      - name: Install Dependencies
         run: |
-          rm -rf .theos/ packages/ obj/ build_output/
-          find . -name "*.o" -delete
-          find . -name "*.dylib" -delete
+          brew install ldid make dpkg
+          echo "/usr/local/opt/make/libexec/gnubin" >> $GITHUB_PATH
+
+      - name: Setup Theos
+        run: |
+          export THEOS="${{ github.workspace }}/theos"
+          echo "THEOS=$THEOS" >> $GITHUB_ENV
           
-          echo "=== Makefile ==="
-          cat Makefile
-          echo ""
-          echo "=== src/main.mm first 30 lines ==="
-          head -n 30 src/main.mm
-          echo ""
-          echo "=== All @class declarations ==="
-          grep -n "@class" src/main.mm || echo "No @class found"
-          echo ""
-          echo "=== All OverlayWindow references ==="
-          grep -n "OverlayWindow" src/main.mm
+          # Clone Theos
+          git clone --recursive https://github.com/theos/theos.git "$THEOS"
+          
+          # Clone iOS SDKs
+          git clone https://github.com/theos/sdks.git "$THEOS/sdks"
+          
+          echo "Theos installed at: $THEOS"
+          ls -la "$THEOS"
+
+      - name: Cache Theos
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/theos
+          key: ${{ runner.os }}-theos-${{ hashFiles('**/Makefile') }}
+          restore-keys: |
+            ${{ runner.os }}-theos-
 
       - name: Build Project
         run: |
+          export THEOS="${{ github.workspace }}/theos"
+          
+          # Build a clean release package
           make clean
           make package FINALPACKAGE=1
           
+          # Create a directory to gather artifacts for download
           mkdir -p build_output
+          
+          # Find and copy the compiled .dylib file
           find .theos/obj/ -name "MyGameCheat.dylib" -exec cp {} build_output/ \;
           
+          # Copy the packaged .deb file
           if [ -d "packages" ]; then
             cp packages/*.deb build_output/
           fi
