@@ -3,8 +3,7 @@
 #include <sys/time.h>
 #include <time.h>
 
-#include "fishhook/fishhook.h"
-
+#include "fishhook.h"
 class SpeedHack {
 public:
     static SpeedHack& getInstance() {
