@@ -2,6 +2,9 @@
 #include <mach/mach_time.h>
 #include <dlfcn.h>
 
+// fishhook ヘッダー - Theos の vendor/include にある場合
+#include <fishhook.h>
+
 // Static hook functions
 static uint64_t hooked_mach_absolute_time() {
     return SpeedHack::getInstance().getHookedMachAbsoluteTime();
@@ -18,9 +21,18 @@ static int hooked_clock_gettime(clockid_t clock_id, struct timespec *tp) {
 void SpeedHack::start() {
     if (initialized) return;
 
+    // Get original functions
     orig_mach_absolute_time = (uint64_t (*)(void))dlsym(RTLD_DEFAULT, "mach_absolute_time");
     orig_gettimeofday = (int (*)(struct timeval *, struct timezone *))dlsym(RTLD_DEFAULT, "gettimeofday");
     orig_clock_gettime = (int (*)(clockid_t, struct timespec *))dlsym(RTLD_DEFAULT, "clock_gettime");
+
+    // Rebind with fishhook
+    struct rebinding rebindings[] = {
+        {"mach_absolute_time", (void *)hooked_mach_absolute_time, (void **)&orig_mach_absolute_time},
+        {"gettimeofday", (void *)hooked_gettimeofday, (void **)&orig_gettimeofday},
+        {"clock_gettime", (void *)hooked_clock_gettime, (void **)&orig_clock_gettime}
+    };
+    rebind_symbols(rebindings, 3);
 
     initialized = true;
 }
