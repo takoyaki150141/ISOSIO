@@ -1,9 +1,7 @@
 #include "SpeedHack.hpp"
 #include <mach/mach_time.h>
 #include <dlfcn.h>
-
-// fishhook ヘッダー - Theos の vendor/include にある場合
-#include <fishhook.h>
+#include "fishhook/fishhook.h"  // -I. でプロジェクトルートからの相対パス
 
 // Static hook functions
 static uint64_t hooked_mach_absolute_time() {
