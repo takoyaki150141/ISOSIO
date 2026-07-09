@@ -20,9 +20,9 @@ jobs:
           brew install ldid make dpkg
           echo "/usr/local/opt/make/libexec/gnubin" >> $GITHUB_PATH
 
-      - name: Cache Theos
-        id: cache-theos
-        uses: actions/cache@v4
+      - name: Restore Theos Cache
+        id: cache-theos-restore
+        uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/theos
           key: ${{ runner.os }}-theos-${{ hashFiles('**/Makefile') }}
@@ -30,19 +30,16 @@ jobs:
             ${{ runner.os }}-theos-
 
       - name: Setup Theos
-        if: steps.cache-theos.outputs.cache-hit != 'true'
+        if: steps.cache-theos-restore.outputs.cache-hit != 'true'
         run: |
           export THEOS="${{ github.workspace }}/theos"
           echo "THEOS=$THEOS" >> $GITHUB_ENV
           
-          # Clone Theos with all submodules
+          rm -rf "$THEOS"
           git clone --recursive https://github.com/theos/theos.git "$THEOS"
           
-          # Clone iOS SDKs only if directory doesn't exist
           if [ ! -d "$THEOS/sdks" ]; then
             git clone https://github.com/theos/sdks.git "$THEOS/sdks"
-          else
-            echo "SDKs directory already exists, skipping clone"
           fi
           
           echo "Theos installed at: $THEOS"
@@ -51,16 +48,19 @@ jobs:
       - name: Set THEOS env
         run: echo "THEOS=${{ github.workspace }}/theos" >> $GITHUB_ENV
 
+      - name: Save Theos Cache
+        if: steps.cache-theos-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/theos
+          key: ${{ runner.os }}-theos-${{ hashFiles('**/Makefile') }}
+
       - name: Build Dylib Only
         run: |
-          # Build .dylib only (no .deb package)
           make clean
           make all FINALPACKAGE=1
           
-          # Create a directory to gather artifacts for download
           mkdir -p build_output
-          
-          # Find and copy the compiled .dylib file
           find .theos/obj/ -name "MyGameCheat.dylib" -exec cp {} build_output/ \;
           
           echo "Build Output Files:"
