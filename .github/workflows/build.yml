@@ -51,11 +51,11 @@ jobs:
       - name: Set THEOS env
         run: echo "THEOS=${{ github.workspace }}/theos" >> $GITHUB_ENV
 
-      - name: Build Project
+      - name: Build Dylib Only
         run: |
-          # Build a clean release package
+          # Build .dylib only (no .deb package)
           make clean
-          make package FINALPACKAGE=1
+          make all FINALPACKAGE=1
           
           # Create a directory to gather artifacts for download
           mkdir -p build_output
@@ -63,17 +63,12 @@ jobs:
           # Find and copy the compiled .dylib file
           find .theos/obj/ -name "MyGameCheat.dylib" -exec cp {} build_output/ \;
           
-          # Copy the packaged .deb file
-          if [ -d "packages" ]; then
-            cp packages/*.deb build_output/
-          fi
-          
           echo "Build Output Files:"
           ls -la build_output/
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: MyGameCheat-Build
+          name: MyGameCheat-Dylib
           path: build_output/*
           if-no-files-found: error
