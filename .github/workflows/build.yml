@@ -19,21 +19,8 @@ jobs:
           brew install ldid make dpkg
           echo "/usr/local/opt/make/libexec/gnubin" >> $GITHUB_PATH
 
-      - name: Setup Theos
-        run: |
-          export THEOS="${{ github.workspace }}/theos"
-          echo "THEOS=$THEOS" >> $GITHUB_ENV
-          
-          # Clone Theos
-          git clone --recursive https://github.com/theos/theos.git "$THEOS"
-          
-          # Clone iOS SDKs
-          git clone https://github.com/theos/sdks.git "$THEOS/sdks"
-          
-          echo "Theos installed at: $THEOS"
-          ls -la "$THEOS"
-
       - name: Cache Theos
+        id: cache-theos
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/theos
@@ -41,10 +28,30 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-theos-
 
-      - name: Build Project
+      - name: Setup Theos
+        if: steps.cache-theos.outputs.cache-hit != 'true'
         run: |
           export THEOS="${{ github.workspace }}/theos"
+          echo "THEOS=$THEOS" >> $GITHUB_ENV
           
+          # Clone Theos with all submodules
+          git clone --recursive https://github.com/theos/theos.git "$THEOS"
+          
+          # Clone iOS SDKs only if directory doesn't exist
+          if [ ! -d "$THEOS/sdks" ]; then
+            git clone https://github.com/theos/sdks.git "$THEOS/sdks"
+          else
+            echo "SDKs directory already exists, skipping clone"
+          fi
+          
+          echo "Theos installed at: $THEOS"
+          ls -la "$THEOS"
+
+      - name: Set THEOS env
+        run: echo "THEOS=${{ github.workspace }}/theos" >> $GITHUB_ENV
+
+      - name: Build Project
+        run: |
           # Build a clean release package
           make clean
           make package FINALPACKAGE=1
