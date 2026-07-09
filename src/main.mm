@@ -9,7 +9,9 @@
 #include "SpeedHack.hpp"
 #include "inlined_html.hpp"
 
-// ========== すべての @interface を先頭に ==========
+// ============================================================
+// ALL @interface DECLARATIONS FIRST (no forward declarations)
+// ============================================================
 
 @interface CheatEngineMessageHandler : NSObject <WKScriptMessageHandler>
 @property (nonatomic, weak) WKWebView *webView;
@@ -17,33 +19,27 @@
 
 @interface FloatingWindow : UIWindow
 @property (nonatomic, strong) UIButton *btnFloat;
+- (void)handlePan:(UIPanGestureRecognizer *)sender;
+- (void)btnTapped;
 @end
 
 @interface OverlayWindow : UIWindow
 @property (nonatomic, strong) WKWebView *webView;
 @property (nonatomic, strong) CheatEngineMessageHandler *msgHandler;
+- (void)bgTapped:(UITapGestureRecognizer *)sender;
 @end
 
-// Global Windows
+// ============================================================
+// GLOBAL VARIABLES
+// ============================================================
+
 static FloatingWindow *gFloatingWindow = nil;
 static OverlayWindow *gOverlayWindow = nil;
 
-// Safe reading helper from MemoryScanner.cpp
-template<typename T>
-static bool readMemorySafe(uintptr_t address, T& outValue) {
-    vm_size_t read_size = sizeof(T);
-    vm_offset_t data;
-    mach_msg_type_number_t data_size;
-    kern_return_t kr = vm_read(mach_task_self(), address, read_size, &data, &data_size);
-    if (kr == KERN_SUCCESS && data_size == read_size) {
-        std::memcpy(&outValue, reinterpret_cast<void*>(data), read_size);
-        vm_deallocate(mach_task_self(), data, data_size);
-        return true;
-    }
-    return false;
-}
+// ============================================================
+// IMPLEMENTATIONS
+// ============================================================
 
-// Implementations
 @implementation CheatEngineMessageHandler
 
 - (void)userContentController:(WKUserContentController *)userContentController didReceiveScriptMessage:(WKScriptMessage *)message {
@@ -64,7 +60,6 @@ static bool readMemorySafe(uintptr_t address, T& outValue) {
             else if ([typeStr isEqualToString:@"float"]) type = ValueType::Type_Float;
             else if ([typeStr isEqualToString:@"double"]) type = ValueType::Type_Double;
             
-            // Scan in a background queue to keep UI responsive
             dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
                 MemoryScanner::getInstance().firstScan(type, [valStr UTF8String]);
                 auto& results = MemoryScanner::getInstance().getResults();
@@ -291,15 +286,16 @@ static bool readMemorySafe(uintptr_t address, T& outValue) {
 
 @end
 
-// Tweak Initialization Constructor
+// ============================================================
+// TWEAK INITIALIZATION
+// ============================================================
+
 __attribute__((constructor))
 static void initializeCheatEngine() {
     NSLog(@"[Antigravity] Dylib loaded into target process!");
     
-    // Start SpeedHack hooks (Fishhook)
     SpeedHack::getInstance().start();
     
-    // Start background thread to freeze locked values
     dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0));
     dispatch_source_set_timer(timer, DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC, 5 * NSEC_PER_MSEC);
     dispatch_source_set_event_handler(timer, ^{
@@ -307,7 +303,6 @@ static void initializeCheatEngine() {
     });
     dispatch_resume(timer);
     
-    // Setup UI when target application did finish launching
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification * _Nonnull note) {
         
         CGRect screenBounds = [UIScreen mainScreen].bounds;
@@ -321,7 +316,6 @@ static void initializeCheatEngine() {
         NSLog(@"[Antigravity] Cheat Engine Overlay UI initialized.");
     }];
     
-    // Observer for closing the UI from WebView message
     [[NSNotificationCenter defaultCenter] addObserverForName:@"CheatEngineCloseUI" object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification * _Nonnull note) {
         gOverlayWindow.hidden = YES;
         gFloatingWindow.hidden = NO;
