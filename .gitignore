@@ -1,0 +1,9 @@
+# Theos build directories
+.theos/
+packages/
+build_output/
+*.deb
+
+# OS files
+.DS_Store
+Thumbs.db

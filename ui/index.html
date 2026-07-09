@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Antigravity Engine</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="glass-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="logo-area">
+                <span class="pulse-dot"></span>
+                <h1>ANTIGRAVITY</h1>
+                <span class="badge">V1.0</span>
+            </div>
+            <button class="close-btn" id="btn-close-ui">×</button>
+        </header>
+
+        <!-- Main Panel -->
+        <div class="main-panel">
+            <!-- Sidebar -->
+            <nav class="sidebar">
+                <button class="nav-item active" data-target="tab-memory">
+                    <svg class="icon" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
+                    <span>Memory</span>
+                </button>
+                <button class="nav-item" data-target="tab-speed">
+                    <svg class="icon" viewBox="0 0 24 24"><path d="M20.38 8.57l-1.23 1.85a8 8 0 0 1-.22 7.58H5.07A8 8 0 0 1 12 6a8 8 0 0 1 5.3 2l1.24-1.87A10 10 0 0 0 3 16.58a10 10 0 0 0 18 0 10 10 0 0 0-.62-8.01zM10.3 12.3a2 2 0 0 0 2.83 0l4.24-4.24-1.41-1.42-4.24 4.24a2 2 0 0 0-1.42 1.42z"/></svg>
+                    <span>Speedhack</span>
+                </button>
+            </nav>
+
+            <!-- Content Area -->
+            <main class="content">
+                <!-- Tab: Memory Scanner -->
+                <section id="tab-memory" class="tab-content active">
+                    <div class="scan-controls">
+                        <div class="input-group">
+                            <label for="select-type">Data Type</label>
+                            <select id="select-type">
+                                <option value="i32">32-bit Integer (i32)</option>
+                                <option value="i64">64-bit Integer (i64)</option>
+                                <option value="float">Float (float)</option>
+                                <option value="double">Double (double)</option>
+                            </select>
+                        </div>
+                        <div class="input-group">
+                            <label for="input-value">Search Value</label>
+                            <div class="search-input-wrapper">
+                                <input type="text" id="input-value" placeholder="Enter value..." inputmode="decimal">
+                            </div>
+                        </div>
+                        <div class="button-row">
+                            <button id="btn-first-scan" class="btn btn-primary">First Scan</button>
+                            <button id="btn-next-scan" class="btn btn-secondary" disabled>Next Scan</button>
+                            <button id="btn-clear" class="btn btn-danger">Clear</button>
+                        </div>
+                    </div>
+
+                    <div class="scan-status">
+                        <span id="status-text">Ready to Scan</span>
+                        <div id="loader" class="loader hidden"></div>
+                    </div>
+
+                    <div class="results-container">
+                        <table class="results-table">
+                            <thead>
+                                <tr>
+                                    <th>Address</th>
+                                    <th>Value</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="results-body">
+                                <tr>
+                                    <td colspan="3" class="placeholder-row">No results. Perform a scan.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <!-- Tab: Speed Hack -->
+                <section id="tab-speed" class="tab-content">
+                    <div class="speed-panel">
+                        <div class="gauge-container">
+                            <div class="gauge">
+                                <div class="gauge-body">
+                                    <div class="gauge-fill" id="speed-fill"></div>
+                                    <div class="gauge-cover">
+                                        <span id="speed-val">1.0</span>
+                                        <span class="speed-unit">x</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="speed-controls">
+                            <div class="slider-wrapper">
+                                <span class="speed-limit">0.1x</span>
+                                <input type="range" id="speed-slider" min="0.1" max="20" step="0.1" value="1.0">
+                                <span class="speed-limit">20.0x</span>
+                            </div>
+                            
+                            <div class="fine-tune">
+                                <button class="btn btn-small" id="btn-speed-dec">-0.1</button>
+                                <input type="number" id="speed-input" min="0.1" max="100" step="0.1" value="1.0">
+                                <button class="btn btn-small" id="btn-speed-inc">+0.1</button>
+                            </div>
+
+                            <div class="button-row">
+                                <button id="btn-speed-reset" class="btn btn-secondary">Reset (1.0x)</button>
+                                <button id="btn-speed-apply" class="btn btn-primary">Apply Speed</button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </main>
+        </div>
+    </div>
+
+    <!-- Edit Modal -->
+    <div id="edit-modal" class="modal-overlay hidden">
+        <div class="modal glass-modal">
+            <h3>Edit Address</h3>
+            <div class="address-display" id="modal-address">0x0</div>
+            <div class="input-group">
+                <input type="text" id="modal-input" placeholder="New value...">
+            </div>
+            <div class="modal-buttons">
+                <button class="btn btn-secondary" id="btn-modal-cancel">Cancel</button>
+                <button class="btn btn-primary" id="btn-modal-save">Modify</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
