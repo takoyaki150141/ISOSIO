@@ -4,13 +4,32 @@
 #include <sstream>
 #include <algorithm>
 #include <cstdint>
+#include <cstring>  // std::memcpy用
 
 #include "MemoryScanner.hpp"
 #include "SpeedHack.hpp"
 #include "inlined_html.hpp"
 
 // ============================================================
-// ALL @interface DECLARATIONS FIRST (no forward declarations)
+// HELPER FUNCTIONS
+// ============================================================
+
+template<typename T>
+static bool readMemorySafe(uintptr_t address, T& outValue) {
+    vm_size_t read_size = sizeof(T);
+    vm_offset_t data;
+    mach_msg_type_number_t data_size;
+    kern_return_t kr = vm_read(mach_task_self(), address, read_size, &data, &data_size);
+    if (kr == KERN_SUCCESS && data_size == read_size) {
+        std::memcpy(&outValue, reinterpret_cast<void*>(data), read_size);
+        vm_deallocate(mach_task_self(), data, data_size);
+        return true;
+    }
+    return false;
+}
+
+// ============================================================
+// ALL @interface DECLARATIONS
 // ============================================================
 
 @interface CheatEngineMessageHandler : NSObject <WKScriptMessageHandler>
