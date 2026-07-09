@@ -90,9 +90,9 @@ static void perform_rebinding_with_section(struct rebindings_entry *rebindings,
                                            char *strtab,
                                            uint32_t *indirect_symtab) {
   const bool is_lazy = (section->flags & SECTION_TYPE) == S_LAZY_SYMBOL_POINTERS;
+  (void)is_lazy;  // ← 追加：未使用変数警告を抑制
   void **indirect_symbol_bindings = (void **)((uintptr_t)slide + section->addr);
   uint32_t *indirect_symbol_indices = indirect_symtab + section->reserved1;
-  
   for (uint32_t i = 0; i < section->size / sizeof(void *); i++) {
     uint32_t symtab_index = indirect_symbol_indices[i];
     if (symtab_index == INDIRECT_SYMBOL_ABS || symtab_index == INDIRECT_SYMBOL_LOCAL ||

@@ -6,7 +6,7 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = MyGameCheat
 
 MyGameCheat_FILES = src/main.mm src/MemoryScanner.cpp src/SpeedHack.cpp fishhook/fishhook.c
-MyGameCheat_CFLAGS = -fobjc-arc
+MyGameCheat_CFLAGS = -fobjc-arc -Wno-unused-variable
 MyGameCheat_LDFLAGS = -Wl,-segalign,4000
 MyGameCheat_FRAMEWORKS = UIKit WebKit
 
