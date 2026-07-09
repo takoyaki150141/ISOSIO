@@ -42,12 +42,14 @@ typedef struct segment_command_64 segment_command_t;
 typedef struct section_64 section_t;
 typedef struct nlist_64 nlist_t;
 #define LC_SEGMENT_ARCH_DEPENDENT LC_SEGMENT_64
+typedef struct load_command load_command_t; 
 #else
 typedef struct mach_header mach_header_t;
 typedef struct segment_command segment_command_t;
 typedef struct section section_t;
 typedef struct nlist nlist_t;
 #define LC_SEGMENT_ARCH_DEPENDENT LC_SEGMENT
+typedef struct load_command load_command_t;
 #endif
 
 #ifndef SEG_DATA_CONST
