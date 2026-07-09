@@ -257,6 +257,8 @@ static OverlayWindow *gOverlayWindow = nil;
 - (void)btnTapped {
     self.hidden = YES;
     gOverlayWindow.hidden = NO;
+    // iOS 15+ 対応: keyWindow 昇格を明示的に行う
+    [gOverlayWindow makeKeyAndVisible];
 }
 
 @end
