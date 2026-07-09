@@ -3,7 +3,8 @@
 #include <sstream>
 #include <algorithm>
 #include <cstring>
-#include <mach/mach_vm.h>
+#include <mach/mach.h>
+#include <mach/vm_region.h>
 
 // Safe memory reading helpers
 template<typename T>
@@ -46,7 +47,7 @@ std::vector<MemoryRegion> MemoryScanner::getWritableRegions() {
     while (true) {
         struct vm_region_submap_info_64 info;
         mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
-        kern_return_t kr = vm_region_recurse_64(mach_task_self(), &address, &size, &depth, reinterpret_cast<vm_info_t>(&info), &count);
+        kern_return_t kr = vm_region_recurse_64(mach_task_self(), &address, &size, &depth, reinterpret_cast<vm_region_recurse_info_t>(&info), &count);
         if (kr != KERN_SUCCESS) {
             break;
         }
