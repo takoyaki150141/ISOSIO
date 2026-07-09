@@ -48,7 +48,7 @@ public:
     std::vector<ScanResult>& getResults() { return results; }
 
 private:
-    MemoryScanner() {}
+    MemoryScanner() : currentType(Type_i32) {}
     ~MemoryScanner() {}
     MemoryScanner(const MemoryScanner&);
     MemoryScanner& operator=(const MemoryScanner&);
