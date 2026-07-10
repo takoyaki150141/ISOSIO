@@ -562,7 +562,7 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
             }
             [touchesEvent performSelector:@selector(_addTouch:forDelayedDelivery:)
                                 withObject:touch
-                                withObject:(__bridge id)NO];
+                                withObject:(__bridge id)(void *)0];
             if (hidEvent) {
                 [touchesEvent performSelector:@selector(_setHIDEvent:) withObject:(__bridge id)hidEvent];
             }
