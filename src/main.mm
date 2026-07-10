@@ -31,6 +31,7 @@ static const CGFloat kButtonSize          = 50.0;
 static const CGFloat kButtonTouchPadding  = 8.0;   // invisible grab area around the circle
 static const NSTimeInterval kIntervals[]  = { 0.05, 0.1, 0.2, 0.5, 1.0 };
 static const NSInteger kIntervalCount     = sizeof(kIntervals) / sizeof(kIntervals[0]);
+static const CGFloat kTargetStopRadius    = 30.0;  // finger-tap tolerance for stop-on-tap
 
 static NSInteger gIntervalIndex = 1;     // default 100 ms
 
@@ -447,6 +448,51 @@ static NSInteger gIntervalIndex = 1;     // default 100 ms
     MacroState *s = MacroState.shared;
     if (s->_isConfigMode) {
         [s setTarget:p];
+    }
+}
+
+@end
+
+// ============================================================
+// UIApplication.sendEvent: SWIZZLE
+// Capture real user touches (auto-tap fires via sendActionsForControlEvents:
+// and does NOT go through sendEvent:, so this only sees intentional taps).
+// When a touch ends within kTargetStopRadius of the recorded target while
+// auto-tap is active, stop the macro.
+// ============================================================
+
+@implementation UIApplication (MacroStopOnTap)
+
+- (void)macro_swizzledSendEvent:(UIEvent *)event {
+    @try {
+        MacroState *s = MacroState.shared;
+        if (s->_isActive && event.type == UIEventTypeTouches) {
+            UIWindow *kw = self.keyWindow;
+            for (UITouch *t in [event allTouches]) {
+                if (t.phase != UITouchPhaseEnded) continue;
+                if (!kw) break;
+                CGPoint p = [t locationInView:kw];
+                // Ignore taps landing on the floating button itself
+                if (s->_button && CGRectContainsPoint(s->_button.frame, p)) continue;
+                CGFloat dx = p.x - s->_target.x;
+                CGFloat dy = p.y - s->_target.y;
+                if (sqrtf(dx * dx + dy * dy) < kTargetStopRadius) {
+                    dispatch_async(dispatch_get_main_queue(), ^{ [s stop]; });
+                    break;
+                }
+            }
+        }
+    } @catch (NSException *e) {
+        // never crash on the swizzle path
+    }
+    [self macro_swizzledSendEvent:event];   // call original (swapped at +load)
+}
+
++ (void)load {
+    Method orig = class_getInstanceMethod(self, @selector(sendEvent:));
+    Method swiz = class_getInstanceMethod(self, @selector(macro_swizzledSendEvent:));
+    if (orig && swiz) {
+        method_exchangeImplementations(orig, swiz);
     }
 }
 
