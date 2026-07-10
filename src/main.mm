@@ -41,12 +41,19 @@ static NSInteger gIntervalIndex = 1;     // default 100 ms
 
 // iOS 13+ replacement for UIApplication.keyWindow. Returns the key window of
 // the active foreground scene, or nil if there isn't one.
+// Works on iOS 13–14 (no UIWindowScene.keyWindow) and iOS 15+ alike.
 static UIWindow *foregroundKeyWindow(UIApplication *app) {
     for (UIScene *scene in app.connectedScenes) {
-        if (scene.activationState == UISceneActivationStateForegroundActive &&
-            [scene isKindOfClass:[UIWindowScene class]]) {
-            UIWindow *w = ((UIWindowScene *)scene).keyWindow;
-            if (w) return w;
+        if (scene.activationState != UISceneActivationStateForegroundActive) continue;
+        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        UIWindowScene *ws = (UIWindowScene *)scene;
+
+        if (@available(iOS 15.0, *)) {
+            if (ws.keyWindow) return ws.keyWindow;
+        }
+        // iOS 13–14 fallback: first non-hidden window of the scene.
+        for (UIWindow *w in ws.windows) {
+            if (!w.hidden) return w;
         }
     }
     return nil;
