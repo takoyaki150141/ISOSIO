@@ -78,6 +78,7 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
 
 @class FloatingButton;
 @class ConfigCaptureWindow;
+@class LogWindow;
 
 // ============================================================
 // MACRO STATE — singleton holding target, mode, timer
