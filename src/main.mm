@@ -39,19 +39,35 @@ static NSInteger gIntervalIndex = 1;     // default 100 ms
 // HELPERS
 // ============================================================
 
-// iOS 16+ replacement for UIApplication.keyWindow. Returns the key window of
-// the active foreground scene, or nil if there isn't one.
-// (Deployment target is iphone:16.0, so UIWindowScene.keyWindow and the
-//  connectedScenes API are always available.)
+// iOS 16+ replacement for UIApplication.keyWindow that ignores our tweak's
+// own windows. UIWindowScene.keyWindow returns whichever window was most
+// recently makeKeyAndVisible'd — if that was our FloatingButton or
+// ConfigCaptureWindow, we'd hitTest on a 50x50 button or a full-screen
+// capture overlay instead of the host app's content, and the auto-tap
+// would silently miss every target.
+//
+// Strategy:
+//   1. If the scene's keyWindow is at or below UIWindowLevelAlert, return
+//      it (it's the host app's content, not our overlay)
+//   2. Otherwise, walk the scene's windows and pick the lowest-windowLevel
+//      non-hidden one (the host app's main window lives at
+//      UIWindowLevelNormal, below any of our tweak windows)
+//   3. Fall through to nil if nothing matches
 static UIWindow *foregroundKeyWindow(UIApplication *app) {
     for (UIScene *scene in app.connectedScenes) {
         if (scene.activationState != UISceneActivationStateForegroundActive) continue;
         if (![scene isKindOfClass:[UIWindowScene class]]) continue;
         UIWindowScene *ws = (UIWindowScene *)scene;
-        if (ws.keyWindow) return ws.keyWindow;
-        for (UIWindow *w in ws.windows) {
-            if (!w.hidden) return w;
+        if (ws.keyWindow && ws.keyWindow.windowLevel <= UIWindowLevelAlert) {
+            return ws.keyWindow;
         }
+        UIWindow *best = nil;
+        for (UIWindow *w in ws.windows) {
+            if (w.hidden) continue;
+            if (w.windowLevel > UIWindowLevelAlert) continue;   // skip our tweak's UIWindowLevelAlert + 99 / + 100
+            if (!best || w.windowLevel < best.windowLevel) best = w;
+        }
+        if (best) return best;
     }
     return nil;
 }
@@ -440,8 +456,10 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
     _dim.hidden = NO;
     _hint.hidden = NO;
     _indicator.hidden = YES;
+    // Just show — don't makeKeyAndVisible, same reason as the floating
+    // button: we don't want the capture overlay to steal the scene's
+    // keyWindow status.
     self.hidden = NO;
-    [self makeKeyAndVisible];
 }
 
 - (void)flashTarget:(CGPoint)point {
@@ -449,7 +467,8 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
     _hint.hidden = YES;
     _indicator.center = point;
     _indicator.hidden = NO;
-    [self makeKeyAndVisible];
+    // Same reason as showForConfig: don't steal the keyWindow.
+    self.hidden = NO;
 }
 
 - (void)hide {
@@ -537,7 +556,10 @@ static void initialize() {
         CGRect bFrame = CGRectMake(20, screen.size.height / 3.0,
                                    kButtonSize, kButtonSize);
         gButton = [[FloatingButton alloc] initWithFrame:bFrame];
-        [gButton makeKeyAndVisible];
+        // Just show — do NOT makeKeyAndVisible. If we did, our 50x50 button
+        // window would become the scene's keyWindow and auto-tap would
+        // hitTest on the button instead of the host app's content.
+        gButton.hidden = NO;
 
         gCapture = [[ConfigCaptureWindow alloc] initWithFrame:screen];
         [MacroState.shared attachCapture:gCapture];
