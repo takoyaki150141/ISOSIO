@@ -144,11 +144,17 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
     NSMutableArray<NSString *> *_lines;
 }
 + (instancetype)shared;
-+ (void)log:(NSString *)fmt, ... NS_FORMAT_FUNCTION(1, 2);
++ (void)record:(NSString *)message;
 + (NSString *)allLinesJoined;
 + (void)clear;
 + (NSUInteger)lineCount;
 @end
+
+// Macro for ergonomic call sites. The variadic Objective-C method syntax
+// (with NS_FORMAT_FUNCTION) was getting mangled by the compiler's
+// method-declaration parser, so the API is now a single-arg method
+// driven by a C-macro that builds the formatted string.
+#define MACRO_LOG(fmt, ...) [MacroLog record:[NSString stringWithFormat:fmt, ##__VA_ARGS__]]
 
 // ============================================================
 // LOG WINDOW — full-screen overlay with scrollable text view +
@@ -202,7 +208,7 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
 - (void)start {
     if (_isActive) return;
     if (!_isTargetSet) {
-        MacroLog.log(@"start() with no target — entering config mode");
+        MACRO_LOG(@"start() with no target — entering config mode");
         [self enterConfigMode];
         return;
     }
@@ -212,7 +218,7 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
                                             selector:@selector(performTap)
                                             userInfo:nil
                                              repeats:YES];
-    MacroLog.log(@"MACRO START — target=(%.0f,%.0f) interval=%.0fms",
+    MACRO_LOG(@"MACRO START — target=(%.0f,%.0f) interval=%.0fms",
                  _target.x, _target.y, kIntervals[gIntervalIndex] * 1000);
     [_button refreshDisplay];
 }
@@ -222,7 +228,7 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
     _isActive = NO;
     [_timer invalidate];
     _timer = nil;
-    MacroLog.log(@"MACRO STOP");
+    MACRO_LOG(@"MACRO STOP");
     [_button refreshDisplay];
 }
 
@@ -232,7 +238,7 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
     _isActive = NO;
     [_timer invalidate];
     _timer = nil;
-    MacroLog.log(@"Entering CONFIG mode — tap on screen to set target");
+    MACRO_LOG(@"Entering CONFIG mode — tap on screen to set target");
     [_capture showForConfig];
     [_button refreshDisplay];
 }
@@ -241,7 +247,7 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
     _target = p;
     _isTargetSet = YES;
     _isConfigMode = NO;
-    MacroLog.log(@"Target set to (%.0f, %.0f)", p.x, p.y);
+    MACRO_LOG(@"Target set to (%.0f, %.0f)", p.x, p.y);
     [_capture flashTarget:p];
     [_button refreshDisplay];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
@@ -261,7 +267,7 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
                                                 userInfo:nil
                                                  repeats:YES];
     }
-    MacroLog.log(@"Interval -> %.0fms", i * 1000);
+    MACRO_LOG(@"Interval -> %.0fms", i * 1000);
     [_button refreshDisplay];
 }
 
@@ -284,22 +290,22 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
 
     UIWindow *targetWindow = foregroundKeyWindow(UIApplication.sharedApplication);
     if (!targetWindow) {
-        MacroLog.log(@"performTap: no target window found, skipping");
+        MACRO_LOG(@"performTap: no target window found, skipping");
         return;
     }
-    MacroLog.log(@"performTap: target=(%.0f,%.0f) window=%@",
+    MACRO_LOG(@"performTap: target=(%.0f,%.0f) window=%@",
                  target.x, target.y, NSStringFromClass(targetWindow.class));
 
     UIView *hit = [targetWindow hitTest:target withEvent:nil];
     if (!hit) {
-        MacroLog.log(@"performTap: hitTest returned nil — point is outside content");
+        MACRO_LOG(@"performTap: hitTest returned nil — point is outside content");
         return;
     }
 
     // Strategy 1: find a UIControl and fire its action
     UIControl *ctrl = [self findControlIn:hit];
     if (ctrl) {
-        MacroLog.log(@"performTap: strategy 1 — sendActions on UIControl %@", NSStringFromClass(ctrl.class));
+        MACRO_LOG(@"performTap: strategy 1 — sendActions on UIControl %@", NSStringFromClass(ctrl.class));
         [ctrl sendActionsForControlEvents:UIControlEventTouchUpInside];
         return;
     }
@@ -307,11 +313,11 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
     // Strategy 2: trigger a UITapGestureRecognizer
     UITapGestureRecognizer *tap = [self findTapGestureIn:hit];
     if (tap && tap.state == UIGestureRecognizerStatePossible) {
-        MacroLog.log(@"performTap: strategy 2 — firing UITapGestureRecognizer");
+        MACRO_LOG(@"performTap: strategy 2 — firing UITapGestureRecognizer");
         [tap setState:UIGestureRecognizerStateRecognized];
         return;
     }
-    MacroLog.log(@"performTap: no UIControl / gesture found — point may be on a non-UIKit surface (game/etc.)");
+    MACRO_LOG(@"performTap: no UIControl / gesture found — point may be on a non-UIKit surface (game/etc.)");
 }
 
 - (UIControl *)findControlIn:(UIView *)view {
@@ -577,30 +583,30 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
         if (s->_isActive && event.type == UIEventTypeTouches) {
             UIWindow *kw = foregroundKeyWindow(self);
             if (!kw) {
-                MacroLog.log(@"swizzle: no foreground window, stop-on-tap can't evaluate");
+                MACRO_LOG(@"swizzle: no foreground window, stop-on-tap can't evaluate");
             }
             for (UITouch *t in [event allTouches]) {
                 if (t.phase != UITouchPhaseEnded) continue;
                 if (!kw) break;
                 CGPoint p = [t locationInView:kw];
                 if (s->_button && CGRectContainsPoint(s->_button.frame, p)) {
-                    MacroLog.log(@"swizzle: touch on floating button, ignored");
+                    MACRO_LOG(@"swizzle: touch on floating button, ignored");
                     continue;
                 }
                 CGFloat dx = p.x - s->_target.x;
                 CGFloat dy = p.y - s->_target.y;
                 CGFloat dist = sqrtf(dx * dx + dy * dy);
-                MacroLog.log(@"swizzle: touchEnd @ (%.0f,%.0f) dist=%.1f (radius=%.0f) target=(%.0f,%.0f)",
+                MACRO_LOG(@"swizzle: touchEnd @ (%.0f,%.0f) dist=%.1f (radius=%.0f) target=(%.0f,%.0f)",
                              p.x, p.y, dist, kTargetStopRadius, s->_target.x, s->_target.y);
                 if (dist < kTargetStopRadius) {
-                    MacroLog.log(@"swizzle: in radius — stopping macro");
+                    MACRO_LOG(@"swizzle: in radius — stopping macro");
                     dispatch_async(dispatch_get_main_queue(), ^{ [s stop]; });
                     break;
                 }
             }
         }
     } @catch (NSException *e) {
-        MacroLog.log(@"swizzle exception: %@", e.reason);
+        MACRO_LOG(@"swizzle exception: %@", e.reason);
     }
     [self macro_swizzledSendEvent:event];   // call original (swapped at +load)
 }
@@ -638,19 +644,14 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
     return self;
 }
 
-+ (void)log:(NSString *)fmt, ... {
-    va_list args;
-    va_start(args, fmt);
-    NSString *line = [[NSString alloc] initWithFormat:fmt arguments:args];
-    va_end(args);
-
++ (void)record:(NSString *)message {
     NSString *ts = [NSDateFormatter localizedStringFromDate:[NSDate date]
                                                   dateStyle:NSDateFormatterNoStyle
                                                   timeStyle:NSDateFormatterMediumStyle];
-    NSString *full = [NSString stringWithFormat:@"[%@] %@", ts, line];
+    NSString *full = [NSString stringWithFormat:@"[%@] %@", ts, message];
 
     [[self shared] appendLine:full];
-    NSLog(@"[Macro] %@", line);
+    NSLog(@"[Macro] %@", message);
 }
 
 - (void)appendLine:(NSString *)line {
@@ -777,7 +778,7 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
 - (void)show {
     [self refresh];
     self.hidden = NO;
-    MacroLog.log(@"Log window opened");
+    MACRO_LOG(@"Log window opened");
 }
 
 - (void)hide {
@@ -787,7 +788,7 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
 - (void)closeIfOpen {
     if (!self.hidden) {
         self.hidden = YES;
-        MacroLog.log(@"Log window closed (auto, gesture fired)");
+        MACRO_LOG(@"Log window closed (auto, gesture fired)");
     }
 }
 
@@ -802,7 +803,7 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
 - (void)handleCopy {
     NSString *text = [MacroLog allLinesJoined];
     [UIPasteboard generalPasteboard].string = text;
-    MacroLog.log(@"Copied %lu chars to clipboard", (unsigned long)text.length);
+    MACRO_LOG(@"Copied %lu chars to clipboard", (unsigned long)text.length);
     // brief on-button feedback
     UIButton *sender = (UIButton *)[self viewWithTag:0] ?: nil;
     (void)sender;
@@ -811,11 +812,11 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
 - (void)handleClear {
     [MacroLog clear];
     [self refresh];
-    MacroLog.log(@"Log buffer cleared by user");
+    MACRO_LOG(@"Log buffer cleared by user");
 }
 
 - (void)handleStart {
-    MacroLog.log(@"Start button pressed -> closing log window and toggling macro");
+    MACRO_LOG(@"Start button pressed -> closing log window and toggling macro");
     [self hide];
     MacroState *s = MacroState.shared;
     if (!s->_isTargetSet) {
@@ -858,7 +859,7 @@ static void initialize() {
         [MacroState.shared attachCapture:gCapture];
         [MacroState.shared attachLog:gLog];
 
-        MacroLog.log(@"Button @ %@, capture + log ready", NSStringFromCGRect(bFrame));
-        MacroLog.log(@"Triple-tap the floating button to open the log window");
+        MACRO_LOG(@"Button @ %@, capture + log ready", NSStringFromCGRect(bFrame));
+        MACRO_LOG(@"Triple-tap the floating button to open the log window");
     }];
 }
