@@ -36,6 +36,23 @@ static const CGFloat kTargetStopRadius    = 30.0;  // finger-tap tolerance for s
 static NSInteger gIntervalIndex = 1;     // default 100 ms
 
 // ============================================================
+// HELPERS
+// ============================================================
+
+// iOS 13+ replacement for UIApplication.keyWindow. Returns the key window of
+// the active foreground scene, or nil if there isn't one.
+static UIWindow *foregroundKeyWindow(UIApplication *app) {
+    for (UIScene *scene in app.connectedScenes) {
+        if (scene.activationState == UISceneActivationStateForegroundActive &&
+            [scene isKindOfClass:[UIWindowScene class]]) {
+            UIWindow *w = ((UIWindowScene *)scene).keyWindow;
+            if (w) return w;
+        }
+    }
+    return nil;
+}
+
+// ============================================================
 // FORWARD DECLARATIONS
 // ============================================================
 
@@ -219,7 +236,7 @@ static NSInteger gIntervalIndex = 1;     // default 100 ms
             if (targetWindow) break;
         }
     }
-    if (!targetWindow) targetWindow = UIApplication.sharedApplication.keyWindow;
+    if (!targetWindow) targetWindow = foregroundKeyWindow(UIApplication.sharedApplication);
     if (!targetWindow) return;
 
     UIView *hit = [targetWindow hitTest:target withEvent:nil];
@@ -467,7 +484,7 @@ static NSInteger gIntervalIndex = 1;     // default 100 ms
     @try {
         MacroState *s = MacroState.shared;
         if (s->_isActive && event.type == UIEventTypeTouches) {
-            UIWindow *kw = self.keyWindow;
+            UIWindow *kw = foregroundKeyWindow(self);
             for (UITouch *t in [event allTouches]) {
                 if (t.phase != UITouchPhaseEnded) continue;
                 if (!kw) break;
