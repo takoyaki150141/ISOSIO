@@ -22,9 +22,59 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #include <mach/mach_time.h>
-#import <IOKit/hid/IOHIDEvent.h>
-#import <IOKit/hid/IOHIDEventSystemClient.h>
-#import <IOKit/hid/IOHIDEventTypes.h>
+#include <dlfcn.h>
+
+// ============================================================
+// IOKIT HID (private API, resolved at runtime via dlsym)
+// The theos IOKit headers are old enough that including them in a
+// modern Objective-C++ TU triggers C++-module / extern-C conflicts,
+// so we don't include them. We forward-declare what we need and
+// resolve the symbols at runtime. If a symbol is missing (jailbreak
+// required) the IOKitHID strategy logs 'not available' and skips.
+// ============================================================
+
+typedef struct __IOHIDEvent *IOHIDEventRef;
+typedef struct __IOHIDEventSystemClient *IOHIDEventSystemClientRef;
+
+typedef IOHIDEventRef (*fnIOHIDEventCreateDigitizerEvent)(
+    CFAllocatorRef, uint32_t, uint32_t,
+    uint32_t, uint64_t, uint32_t,
+    double, double, double, double, double, double);
+typedef void (*fnIOHIDEventSetIntegerValue)(IOHIDEventRef, uint32_t, int64_t);
+typedef IOHIDEventSystemClientRef (*fnIOHIDEventSystemClientCreate)(CFAllocatorRef);
+typedef void (*fnIOHIDEventSystemClientDispatchEvent)(IOHIDEventSystemClientRef, IOHIDEventRef);
+
+static fnIOHIDEventCreateDigitizerEvent      pIOHIDEventCreateDigitizerEvent     = NULL;
+static fnIOHIDEventSetIntegerValue           pIOHIDEventSetIntegerValue          = NULL;
+static fnIOHIDEventSystemClientCreate        pIOHIDEventSystemClientCreate       = NULL;
+static fnIOHIDEventSystemClientDispatchEvent pIOHIDEventSystemClientDispatchEvent = NULL;
+
+static BOOL gIOKitResolved = NO;
+static BOOL gIOKitAvailable = NO;
+
+static void resolveIOKitOnce(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        void *h = dlopen(NULL, RTLD_NOW);
+        if (!h) h = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
+        if (!h) { gIOKitResolved = YES; gIOKitAvailable = NO; return; }
+        pIOHIDEventCreateDigitizerEvent      = dlsym(h, "IOHIDEventCreateDigitizerEvent");
+        pIOHIDEventSetIntegerValue           = dlsym(h, "IOHIDEventSetIntegerValue");
+        pIOHIDEventSystemClientCreate        = dlsym(h, "IOHIDEventSystemClientCreate");
+        pIOHIDEventSystemClientDispatchEvent = dlsym(h, "IOHIDEventSystemClientDispatchEvent");
+        gIOKitResolved = YES;
+        gIOKitAvailable = (pIOHIDEventCreateDigitizerEvent &&
+                           pIOHIDEventSetIntegerValue &&
+                           pIOHIDEventSystemClientCreate &&
+                           pIOHIDEventSystemClientDispatchEvent);
+    });
+}
+
+// IOHID constants we need (values match the public IOKit headers).
+static const uint32_t kIOHIDDigitizerTransducerTypeTouch  = 13;   // IOHIDDigitizerTransducerTypeTouch
+static const uint32_t kIOHIDDigitizerEventTouch          = 1u << 0;
+static const uint32_t kIOHIDDigitizerEventTouchEnd       = 1u << 1;
+static const uint32_t kIOHIDEventFieldDigitizerCollection = 0x0c01;
 
 // ============================================================
 // CONFIG
@@ -193,7 +243,9 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
 // (so the log overlay doesn't block auto-tap target resolution).
 // ============================================================
 
-@interface LogWindow : UIWindow
+@interface LogWindow : UIWindow {
+    NSArray<UIButton *> *_strategyButtons;
+}
 @property (nonatomic, strong) UITextView *textView;
 - (void)show;
 - (void)hide;
@@ -366,14 +418,18 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
         }
         case TapStrategyAccessibility: {
             // Walk up from hit, looking for an accessibility container that
-            // can produce an element at the target point.
+            // can produce an element at the target point. UIAccessibilityContainer
+            // is a protocol that UIView conforms to, so we cast to id<...>.
             UIView *v = hit;
             UIAccessibilityElement *element = nil;
             while (v && !element) {
-                if ([v respondsToSelector:@selector(accessibilityElementAtPoint:)]) {
+                if ([v conformsToProtocol:@protocol(UIAccessibilityContainer)]) {
+                    id<UIAccessibilityContainer> container = (id<UIAccessibilityContainer>)v;
                     CGPoint local = [v convertPoint:target fromView:nil];
-                    id e = [v accessibilityElementAtPoint:local];
-                    if ([e isKindOfClass:[UIAccessibilityElement class]]) element = e;
+                    if ([container respondsToSelector:@selector(accessibilityElementAtPoint:)]) {
+                        id e = [container accessibilityElementAtPoint:local];
+                        if ([e isKindOfClass:[UIAccessibilityElement class]]) element = e;
+                    }
                 }
                 v = v.superview;
             }
@@ -389,17 +445,18 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
             break;
         }
         case TapStrategyIOKitHID: {
-            // Down + brief hold + Up. This bypasses UIKit entirely; works
-            // for games / Metal surfaces but typically requires the IOKit
-            // entitlement / a jailbroken runtime to actually dispatch.
-            IOHIDEventSystemClientRef client = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
+            resolveIOKitOnce();
+            if (!gIOKitAvailable) {
+                MACRO_LOG(@"performTap: IOKitHID — not available (jailbreak / entitlement required)");
+                break;
+            }
+            IOHIDEventSystemClientRef client = pIOHIDEventSystemClientCreate(kCFAllocatorDefault);
             if (!client) {
-                MACRO_LOG(@"performTap: IOKitHID — IOHIDEventSystemClientCreate returned NULL (not available in this process)");
+                MACRO_LOG(@"performTap: IOKitHID — system client create returned NULL");
                 break;
             }
             uint64_t ts = mach_absolute_time();
-
-            IOHIDEventRef down = IOHIDEventCreateDigitizerEvent(
+            IOHIDEventRef down = pIOHIDEventCreateDigitizerEvent(
                 kCFAllocatorDefault,
                 kIOHIDDigitizerTransducerTypeTouch,
                 1,
@@ -408,13 +465,13 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
                 (double)target.x, (double)target.y,
                 0, 0, 0, 0);
             if (down) {
-                IOHIDEventSetIntegerValue(down, kIOHIDEventFieldDigitizerCollection, 1);
-                IOHIDEventSystemClientDispatchEvent(client, down);
+                pIOHIDEventSetIntegerValue(down, kIOHIDEventFieldDigitizerCollection, 1);
+                pIOHIDEventSystemClientDispatchEvent(client, down);
                 CFRelease(down);
             }
-            usleep(20000);   // 20 ms hold
+            usleep(20000);
             uint64_t ts2 = mach_absolute_time();
-            IOHIDEventRef up = IOHIDEventCreateDigitizerEvent(
+            IOHIDEventRef up = pIOHIDEventCreateDigitizerEvent(
                 kCFAllocatorDefault,
                 kIOHIDDigitizerTransducerTypeTouch,
                 1,
@@ -424,8 +481,8 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
                 (double)target.x, (double)target.y,
                 0, 0, 0, 0);
             if (up) {
-                IOHIDEventSetIntegerValue(up, kIOHIDEventFieldDigitizerCollection, 1);
-                IOHIDEventSystemClientDispatchEvent(client, up);
+                pIOHIDEventSetIntegerValue(up, kIOHIDEventFieldDigitizerCollection, 1);
+                pIOHIDEventSystemClientDispatchEvent(client, up);
                 CFRelease(up);
             }
             CFRelease(client);
@@ -950,14 +1007,6 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
     }
 }
 
-- (void)refresh {
-    _textView.text = [MacroLog allLinesJoined];
-    if (_textView.text.length > 0) {
-        NSRange bottom = NSMakeRange(_textView.text.length - 1, 1);
-        [_textView scrollRangeToVisible:bottom];
-    }
-}
-
 - (void)handleCopy {
     NSString *text = [MacroLog allLinesJoined];
     [UIPasteboard generalPasteboard].string = text;
@@ -1000,15 +1049,6 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
         b.layer.borderWidth = isActive ? 1.5 : 0;
         b.layer.borderColor = UIColor.whiteColor.CGColor;
     }
-}
-
-- (void)refresh {
-    _textView.text = [MacroLog allLinesJoined];
-    if (_textView.text.length > 0) {
-        NSRange bottom = NSMakeRange(_textView.text.length - 1, 1);
-        [_textView scrollRangeToVisible:bottom];
-    }
-    [self refreshStrategyButtons];
 }
 
 @end
