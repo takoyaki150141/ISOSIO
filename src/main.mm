@@ -425,17 +425,19 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
             // Walk up from hit, looking for an accessibility container that
             // can produce an element at the target point.
             //
-            // UIAccessibilityContainer is a formal protocol that the iOS
-            // 17.5 SDK ships only in a private / non-modularised header that
-            // we can't safely import here, so we don't reference the
-            // protocol symbol. We just respond-to-selector and erase the
-            // type to id when calling — the runtime dispatches correctly.
+            // The UIAccessibilityContainer protocol is not in the public
+            // iOS 17.5 SDK headers, so we can't reference its selector
+            // through dot syntax even on an `id` receiver. objc_msgSend
+            // with a typed function-pointer cast is the only way to
+            // dispatch this selector at compile time without dragging
+            // in a private header.
+            typedef id (*aeap_fn)(id, SEL, CGPoint);
             UIView *v = hit;
             UIAccessibilityElement *element = nil;
             while (v && !element) {
-                if ([(id)v respondsToSelector:@selector(accessibilityElementAtPoint:)]) {
+                if ([v respondsToSelector:@selector(accessibilityElementAtPoint:)]) {
                     CGPoint local = [v convertPoint:target fromView:nil];
-                    id e = [(id)v accessibilityElementAtPoint:local];
+                    id e = ((aeap_fn)objc_msgSend)(v, @selector(accessibilityElementAtPoint:), local);
                     if ([e isKindOfClass:[UIAccessibilityElement class]]) element = e;
                 }
                 v = v.superview;
