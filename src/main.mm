@@ -103,7 +103,8 @@ typedef NS_ENUM(NSInteger, TapStrategy) {
     TapStrategyControlAction = 0,   // sendActionsForControlEvents: on the closest UIControl
     TapStrategyTapRecognizer,       // setState:Recognized on the closest UITapGestureRecognizer
     TapStrategyAccessibility,       // accessibilityActivate on the closest accessible element
-    TapStrategyIOKitHID,            // IOHIDEvent digitizer touch (jailbreak-grade; works for games)
+    TapStrategyIOKitHID,            // IOHIDEvent digitizer touch via IOHIDEventSystemClient
+    TapStrategyEarlGrey,            // UITouchesEvent + _addTouch + IOHIDEvent (EarlGrey / XCTest)
     TapStrategyCount
 };
 
@@ -115,6 +116,7 @@ static NSString *TapStrategyName(TapStrategy s) {
         case TapStrategyTapRecognizer: return @"TapRecognizer";
         case TapStrategyAccessibility: return @"Accessibility";
         case TapStrategyIOKitHID:      return @"IOKitHID";
+        case TapStrategyEarlGrey:      return @"EarlGrey";
         default: return @"?";
     }
 }
@@ -496,6 +498,82 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
             }
             CFRelease(client);
             MACRO_LOG(@"performTap: IOKitHID — dispatched down+up at (%.0f,%.0f)", target.x, target.y);
+            return;
+        }
+        case TapStrategyEarlGrey: {
+            // EarlGrey (google.com's iOS UI testing framework) approach.
+            // Used internally by XCTest. The path is:
+            //   1. Get UIApplication._touchesEvent (private)
+            //   2. _clearTouches + _addTouch:forDelayedDelivery:
+            //   3. Build IOHIDEvent and bind via UITouch._setHidEvent:
+            //      and UITouchesEvent._setHIDEvent:
+            //   4. sendEvent: on UIApplication
+            // Works for both UIKit and many games (anything that uses the
+            // standard hit-test + responder chain, since dispatch goes
+            // through the same plumbing as a real touch).
+            if (![UIApplication.sharedApplication respondsToSelector:@selector(_touchesEvent)]) {
+                MACRO_LOG(@"performTap: EarlGrey — _touchesEvent unavailable");
+                break;
+            }
+            id touchesEvent = [UIApplication.sharedApplication performSelector:@selector(_touchesEvent)];
+            if (!touchesEvent ||
+                ![touchesEvent respondsToSelector:@selector(_clearTouches)] ||
+                ![touchesEvent respondsToSelector:@selector(_addTouch:forDelayedDelivery:)] ||
+                ![touchesEvent respondsToSelector:@selector(_setHIDEvent:)]) {
+                MACRO_LOG(@"performTap: EarlGrey — required private methods missing");
+                break;
+            }
+            resolveIOKitOnce();
+            if (!gIOKitAvailable) {
+                MACRO_LOG(@"performTap: EarlGrey — IOHit HID symbols missing, need a real touch only");
+                // Fall through, dispatch without a HID event attached.
+            }
+
+            // Build the touch.
+            UITouch *touch = [[UITouch alloc] init];
+            [touch setValue:@(1)                                  forKey:@"tapCount"];
+            [touch setValue:[NSValue valueWithCGPoint:target]      forKey:@"locationInWindow"];
+            [touch setValue:[NSValue valueWithCGPoint:target]      forKey:@"previousLocationInWindow"];
+            [touch setValue:@(UITouchPhaseBegan)                   forKey:@"phase"];
+            [touch setValue:targetWindow                           forKey:@"window"];
+            [touch setValue:hit                                    forKey:@"view"];
+            [touch setValue:@([[NSProcessInfo processInfo] systemUptime]) forKey:@"timestamp"];
+
+            // Build the HID event.
+            IOHIDEventRef hidEvent = NULL;
+            if (gIOKitAvailable) {
+                hidEvent = pIOHIDEventCreateDigitizerEvent(
+                    kCFAllocatorDefault,
+                    kIOHIDDigitizerTransducerTypeTouch,
+                    1,
+                    kIOHIDDigitizerEventTouch,
+                    mach_absolute_time(), 0,
+                    (double)target.x, (double)target.y,
+                    0, 0, 0, 0);
+                if (hidEvent) {
+                    pIOHIDEventSetIntegerValue(hidEvent, kIOHIDEventFieldDigitizerCollection, 1);
+                }
+            }
+
+            [touchesEvent performSelector:@selector(_clearTouches)];
+
+            if (hidEvent && [touch respondsToSelector:@selector(_setHidEvent:)]) {
+                [touch performSelector:@selector(_setHidEvent:) withObject:(__bridge id)hidEvent];
+            }
+            [touchesEvent performSelector:@selector(_addTouch:forDelayedDelivery:)
+                                withObject:touch
+                                withObject:(__bridge id)NO];
+            if (hidEvent) {
+                [touchesEvent performSelector:@selector(_setHIDEvent:) withObject:(__bridge id)hidEvent];
+            }
+
+            [UIApplication.sharedApplication sendEvent:touchesEvent];
+
+            [touchesEvent performSelector:@selector(_clearTouches)];
+            if (hidEvent) CFRelease(hidEvent);
+
+            MACRO_LOG(@"performTap: EarlGrey — dispatched via _touchesEvent at (%.0f,%.0f) hidEvent=%@",
+                      target.x, target.y, hidEvent ? @"yes" : @"no");
             return;
         }
         default:
@@ -955,21 +1033,21 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
         start.backgroundColor = [UIColor colorWithRed:0.2 green:0.5 blue:0.2 alpha:0.6];
         [rootView addSubview:start];
 
-        // Strategy picker: 4 small buttons in a row, just above the text view.
+        // Strategy picker: 5 small buttons in a row, just above the text view.
         // Tapping sets the active strategy; active one is highlighted.
         NSMutableArray *btns = [NSMutableArray array];
         CGFloat stratY = 78;
         CGFloat stratH = 36;
-        CGFloat stratW = (self.bounds.size.width - 50) / 4;
-        NSArray *labels = @[ @"Control", @"Gesture", @"Access", @"IOKit" ];
-        for (NSInteger i = 0; i < 4; i++) {
-            CGRect fr = CGRectMake(10 + i * (stratW + 10.0/4.0), stratY, stratW, stratH);
+        CGFloat stratW = (self.bounds.size.width - 60) / 5;
+        NSArray *labels = @[ @"Control", @"Gesture", @"Access", @"IOKit", @"EarlG" ];
+        for (NSInteger i = 0; i < 5; i++) {
+            CGRect fr = CGRectMake(10 + i * (stratW + 2.5), stratY, stratW, stratH);
             UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
             b.frame = fr;
             b.tag = i;
             [b setTitle:labels[i] forState:UIControlStateNormal];
             [b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-            b.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+            b.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
             b.layer.cornerRadius = 6;
             [b addTarget:self action:@selector(handleStrategy:) forControlEvents:UIControlEventTouchUpInside];
             [rootView addSubview:b];
