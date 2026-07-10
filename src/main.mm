@@ -423,18 +423,20 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
         }
         case TapStrategyAccessibility: {
             // Walk up from hit, looking for an accessibility container that
-            // can produce an element at the target point. UIAccessibilityContainer
-            // is a protocol that UIView conforms to, so we cast to id<...>.
+            // can produce an element at the target point.
+            //
+            // UIAccessibilityContainer is a formal protocol that the iOS
+            // 17.5 SDK ships only in a private / non-modularised header that
+            // we can't safely import here, so we don't reference the
+            // protocol symbol. We just respond-to-selector and erase the
+            // type to id when calling — the runtime dispatches correctly.
             UIView *v = hit;
             UIAccessibilityElement *element = nil;
             while (v && !element) {
-                if ([v conformsToProtocol:@protocol(UIAccessibilityContainer)]) {
-                    id<UIAccessibilityContainer> container = (id<UIAccessibilityContainer>)v;
+                if ([(id)v respondsToSelector:@selector(accessibilityElementAtPoint:)]) {
                     CGPoint local = [v convertPoint:target fromView:nil];
-                    if ([container respondsToSelector:@selector(accessibilityElementAtPoint:)]) {
-                        id e = [container accessibilityElementAtPoint:local];
-                        if ([e isKindOfClass:[UIAccessibilityElement class]]) element = e;
-                    }
+                    id e = [(id)v accessibilityElementAtPoint:local];
+                    if ([e isKindOfClass:[UIAccessibilityElement class]]) element = e;
                 }
                 v = v.superview;
             }
