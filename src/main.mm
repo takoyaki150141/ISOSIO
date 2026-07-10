@@ -39,19 +39,16 @@ static NSInteger gIntervalIndex = 1;     // default 100 ms
 // HELPERS
 // ============================================================
 
-// iOS 13+ replacement for UIApplication.keyWindow. Returns the key window of
+// iOS 16+ replacement for UIApplication.keyWindow. Returns the key window of
 // the active foreground scene, or nil if there isn't one.
-// Works on iOS 13–14 (no UIWindowScene.keyWindow) and iOS 15+ alike.
+// (Deployment target is iphone:16.0, so UIWindowScene.keyWindow and the
+//  connectedScenes API are always available.)
 static UIWindow *foregroundKeyWindow(UIApplication *app) {
     for (UIScene *scene in app.connectedScenes) {
         if (scene.activationState != UISceneActivationStateForegroundActive) continue;
         if (![scene isKindOfClass:[UIWindowScene class]]) continue;
         UIWindowScene *ws = (UIWindowScene *)scene;
-
-        if (@available(iOS 15.0, *)) {
-            if (ws.keyWindow) return ws.keyWindow;
-        }
-        // iOS 13–14 fallback: first non-hidden window of the scene.
+        if (ws.keyWindow) return ws.keyWindow;
         for (UIWindow *w in ws.windows) {
             if (!w.hidden) return w;
         }
@@ -227,23 +224,7 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
     if (!_isTargetSet) return;
     CGPoint target = _target;
 
-    // Find the active foreground window
-    UIWindow *targetWindow = nil;
-    if (@available(iOS 13.0, *)) {
-        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-            if (scene.activationState == UISceneActivationStateForegroundActive &&
-                [scene isKindOfClass:[UIWindowScene class]]) {
-                for (UIWindow *w in ((UIWindowScene *)scene).windows) {
-                    if (!w.hidden && w.screen == UIScreen.mainScreen) {
-                        targetWindow = w;
-                        break;
-                    }
-                }
-            }
-            if (targetWindow) break;
-        }
-    }
-    if (!targetWindow) targetWindow = foregroundKeyWindow(UIApplication.sharedApplication);
+    UIWindow *targetWindow = foregroundKeyWindow(UIApplication.sharedApplication);
     if (!targetWindow) return;
 
     UIView *hit = [targetWindow hitTest:target withEvent:nil];
