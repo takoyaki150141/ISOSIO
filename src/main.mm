@@ -92,10 +92,11 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
     NSTimer *_timer;
     FloatingButton *_button;
     ConfigCaptureWindow *_capture;
-}
+    LogWindow *_log;}
 + (instancetype)shared;
 - (void)attachButton:(FloatingButton *)button;
 - (void)attachCapture:(ConfigCaptureWindow *)capture;
+- (void)attachLog:(LogWindow *)log;
 - (void)toggle;
 - (void)start;
 - (void)stop;
@@ -116,6 +117,7 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
 @property (nonatomic, strong) UIView *circle;     // visible circle
 @property (nonatomic, strong) UILabel *label;
 - (void)refreshDisplay;
+- (void)handleTripleTap;   // opens the LogWindow
 @end
 
 // ============================================================
@@ -130,6 +132,37 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
 - (void)showForConfig;
 - (void)flashTarget:(CGPoint)point;
 - (void)hide;
+@end
+
+// ============================================================
+// MACRO LOG — in-memory ring buffer of debug lines, shown by
+// LogWindow. Thread-safe via @synchronized on the backing array.
+// ============================================================
+
+@interface MacroLog : NSObject {
+    NSMutableArray<NSString *> *_lines;
+}
++ (instancetype)shared;
++ (void)log:(NSString *)fmt, ... NS_FORMAT_FUNCTION(1, 2);
++ (NSString *)allLinesJoined;
++ (void)clear;
++ (NSUInteger)lineCount;
+@end
+
+// ============================================================
+// LOG WINDOW — full-screen overlay with scrollable text view +
+// Copy / Clear / Start / Close buttons. Shown via triple-tap on
+// the floating button. Auto-closes when the user starts the macro
+// from inside it (Start) or fires any other floating-button gesture
+// (so the log overlay doesn't block auto-tap target resolution).
+// ============================================================
+
+@interface LogWindow : UIWindow
+@property (nonatomic, strong) UITextView *textView;
+- (void)show;
+- (void)hide;
+- (void)refresh;
+- (void)closeIfOpen;
 @end
 
 // ============================================================
@@ -157,6 +190,7 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
 
 - (void)attachButton:(FloatingButton *)button  { _button = button; }
 - (void)attachCapture:(ConfigCaptureWindow *)c { _capture = c; }
+- (void)attachLog:(LogWindow *)log            { _log = log; }
 
 - (void)toggle {
     if (_isActive) [self stop];
@@ -167,23 +201,27 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
 - (void)start {
     if (_isActive) return;
     if (!_isTargetSet) {
+        MacroLog.log(@"start() with no target — entering config mode");
         [self enterConfigMode];
         return;
     }
     _isActive = YES;
-    __weak typeof(self) weakSelf = self;
     _timer = [NSTimer scheduledTimerWithTimeInterval:kIntervals[gIntervalIndex]
                                               target:self
                                             selector:@selector(performTap)
                                             userInfo:nil
                                              repeats:YES];
+    MacroLog.log(@"MACRO START — target=(%.0f,%.0f) interval=%.0fms",
+                 _target.x, _target.y, kIntervals[gIntervalIndex] * 1000);
     [_button refreshDisplay];
 }
 
 - (void)stop {
+    if (!_isActive && !_timer) return;
     _isActive = NO;
     [_timer invalidate];
     _timer = nil;
+    MacroLog.log(@"MACRO STOP");
     [_button refreshDisplay];
 }
 
@@ -193,6 +231,7 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
     _isActive = NO;
     [_timer invalidate];
     _timer = nil;
+    MacroLog.log(@"Entering CONFIG mode — tap on screen to set target");
     [_capture showForConfig];
     [_button refreshDisplay];
 }
@@ -201,9 +240,9 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
     _target = p;
     _isTargetSet = YES;
     _isConfigMode = NO;
+    MacroLog.log(@"Target set to (%.0f, %.0f)", p.x, p.y);
     [_capture flashTarget:p];
     [_button refreshDisplay];
-    // After a short flash, return key window to the app
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         [_capture hide];
@@ -212,14 +251,16 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
 
 - (void)cycleInterval {
     gIntervalIndex = (gIntervalIndex + 1) % kIntervalCount;
+    NSTimeInterval i = kIntervals[gIntervalIndex];
     if (_isActive) {
         [_timer invalidate];
-        _timer = [NSTimer scheduledTimerWithTimeInterval:kIntervals[gIntervalIndex]
+        _timer = [NSTimer scheduledTimerWithTimeInterval:i
                                                   target:self
                                                 selector:@selector(performTap)
                                                 userInfo:nil
                                                  repeats:YES];
     }
+    MacroLog.log(@"Interval -> %.0fms", i * 1000);
     [_button refreshDisplay];
 }
 
@@ -241,14 +282,23 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
     CGPoint target = _target;
 
     UIWindow *targetWindow = foregroundKeyWindow(UIApplication.sharedApplication);
-    if (!targetWindow) return;
+    if (!targetWindow) {
+        MacroLog.log(@"performTap: no target window found, skipping");
+        return;
+    }
+    MacroLog.log(@"performTap: target=(%.0f,%.0f) window=%@",
+                 target.x, target.y, NSStringFromClass(targetWindow.class));
 
     UIView *hit = [targetWindow hitTest:target withEvent:nil];
-    if (!hit) return;
+    if (!hit) {
+        MacroLog.log(@"performTap: hitTest returned nil — point is outside content");
+        return;
+    }
 
     // Strategy 1: find a UIControl and fire its action
     UIControl *ctrl = [self findControlIn:hit];
     if (ctrl) {
+        MacroLog.log(@"performTap: strategy 1 — sendActions on UIControl %@", NSStringFromClass(ctrl.class));
         [ctrl sendActionsForControlEvents:UIControlEventTouchUpInside];
         return;
     }
@@ -256,11 +306,11 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
     // Strategy 2: trigger a UITapGestureRecognizer
     UITapGestureRecognizer *tap = [self findTapGestureIn:hit];
     if (tap && tap.state == UIGestureRecognizerStatePossible) {
-        // Synthesize a recognizer fire. Note: this is a best-effort fallback.
+        MacroLog.log(@"performTap: strategy 2 — firing UITapGestureRecognizer");
         [tap setState:UIGestureRecognizerStateRecognized];
         return;
     }
-    // Nothing to do — game / non-UIKit content. User needs IOKit fallback (jailbreak).
+    MacroLog.log(@"performTap: no UIControl / gesture found — point may be on a non-UIKit surface (game/etc.)");
 }
 
 - (UIControl *)findControlIn:(UIView *)view {
@@ -346,6 +396,11 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
         [self addGestureRecognizer:dbl];
         [single requireGestureRecognizerToFail:dbl];
 
+        UITapGestureRecognizer *trp = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleTripleTap)];
+        trp.numberOfTapsRequired = 3;
+        [self addGestureRecognizer:trp];
+        [dbl requireGestureRecognizerToFail:trp];
+
         UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleLongPress:)];
         lp.minimumPressDuration = 0.55;
         [self addGestureRecognizer:lp];
@@ -370,6 +425,7 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
 
 - (void)handleSingleTap {
     MacroState *s = MacroState.shared;
+    [s->_log closeIfOpen];   // any real gesture → drop the log overlay
     if (s->_isConfigMode) return;   // already waiting for a screen tap
     if (!s->_isTargetSet) {
         [s enterConfigMode];
@@ -379,12 +435,24 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
 }
 
 - (void)handleDoubleTap {
-    [MacroState.shared cycleInterval];
+    MacroState *s = MacroState.shared;
+    [s->_log closeIfOpen];
+    [s cycleInterval];
 }
 
 - (void)handleLongPress:(UILongPressGestureRecognizer *)g {
     if (g.state == UIGestureRecognizerStateBegan) {
-        [MacroState.shared enterConfigMode];
+        MacroState *s = MacroState.shared;
+        [s->_log closeIfOpen];
+        [s enterConfigMode];
+    }
+}
+
+- (void)handleTripleTap {
+    MacroState *s = MacroState.shared;
+    if (s->_log) {
+        if (s->_log.hidden) [s->_log show];
+        else                [s->_log hide];
     }
 }
 
@@ -507,22 +575,31 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
         MacroState *s = MacroState.shared;
         if (s->_isActive && event.type == UIEventTypeTouches) {
             UIWindow *kw = foregroundKeyWindow(self);
+            if (!kw) {
+                MacroLog.log(@"swizzle: no foreground window, stop-on-tap can't evaluate");
+            }
             for (UITouch *t in [event allTouches]) {
                 if (t.phase != UITouchPhaseEnded) continue;
                 if (!kw) break;
                 CGPoint p = [t locationInView:kw];
-                // Ignore taps landing on the floating button itself
-                if (s->_button && CGRectContainsPoint(s->_button.frame, p)) continue;
+                if (s->_button && CGRectContainsPoint(s->_button.frame, p)) {
+                    MacroLog.log(@"swizzle: touch on floating button, ignored");
+                    continue;
+                }
                 CGFloat dx = p.x - s->_target.x;
                 CGFloat dy = p.y - s->_target.y;
-                if (sqrtf(dx * dx + dy * dy) < kTargetStopRadius) {
+                CGFloat dist = sqrtf(dx * dx + dy * dy);
+                MacroLog.log(@"swizzle: touchEnd @ (%.0f,%.0f) dist=%.1f (radius=%.0f) target=(%.0f,%.0f)",
+                             p.x, p.y, dist, kTargetStopRadius, s->_target.x, s->_target.y);
+                if (dist < kTargetStopRadius) {
+                    MacroLog.log(@"swizzle: in radius — stopping macro");
                     dispatch_async(dispatch_get_main_queue(), ^{ [s stop]; });
                     break;
                 }
             }
         }
     } @catch (NSException *e) {
-        // never crash on the swizzle path
+        MacroLog.log(@"swizzle exception: %@", e.reason);
     }
     [self macro_swizzledSendEvent:event];   // call original (swapped at +load)
 }
@@ -532,6 +609,218 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
     Method swiz = class_getInstanceMethod(self, @selector(macro_swizzledSendEvent:));
     if (orig && swiz) {
         method_exchangeImplementations(orig, swiz);
+        NSLog(@"[Macro] UIApplication.sendEvent: swizzle installed");
+    } else {
+        NSLog(@"[Macro] UIApplication.sendEvent: swizzle FAILED to install (orig=%p swiz=%p)", orig, swiz);
+    }
+}
+
+@end
+
+// ============================================================
+// MACRO LOG IMPL
+// ============================================================
+
+@implementation MacroLog
+
++ (instancetype)shared {
+    static MacroLog *s;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ s = [[MacroLog alloc] init]; });
+    return s;
+}
+
+- (instancetype)init {
+    if ((self = [super init])) {
+        _lines = [NSMutableArray new];
+    }
+    return self;
+}
+
++ (void)log:(NSString *)fmt, ... {
+    va_list args;
+    va_start(args, fmt);
+    NSString *line = [[NSString alloc] initWithFormat:fmt arguments:args];
+    va_end(args);
+
+    NSString *ts = [NSDateFormatter localizedStringFromDate:[NSDate date]
+                                                  dateStyle:NSDateFormatterNoStyle
+                                                  timeStyle:NSDateFormatterMediumStyle];
+    NSString *full = [NSString stringWithFormat:@"[%@] %@", ts, line];
+
+    [[self shared] appendLine:full];
+    NSLog(@"[Macro] %@", line);
+}
+
+- (void)appendLine:(NSString *)line {
+    @synchronized (_lines) {
+        while (_lines.count >= 200) { [_lines removeObjectAtIndex:0]; }
+        [_lines addObject:line];
+    }
+}
+
++ (NSString *)allLinesJoined {
+    return [[self shared] allLinesJoinedInternal];
+}
+
+- (NSString *)allLinesJoinedInternal {
+    @synchronized (_lines) {
+        return [_lines componentsJoinedByString:@"\n"];
+    }
+}
+
++ (void)clear {
+    [[self shared] clearInternal];
+}
+
+- (void)clearInternal {
+    @synchronized (_lines) {
+        [_lines removeAllObjects];
+    }
+}
+
++ (NSUInteger)lineCount {
+    @synchronized ([self shared]->_lines) {
+        return [self shared]->_lines.count;
+    }
+}
+
+@end
+
+// ============================================================
+// LOG WINDOW IMPL
+// ============================================================
+
+@implementation LogWindow
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    if ((self = [super initWithFrame:frame])) {
+        // Below the floating button (+100) and the capture overlay (+99)
+        // so the button stays tappable while the log window is shown.
+        self.windowLevel = UIWindowLevelAlert + 98;
+        self.backgroundColor = [UIColor colorWithRed:0.04 green:0.04 blue:0.06 alpha:0.97];
+        self.hidden = YES;
+
+        UIViewController *vc = [[UIViewController alloc] init];
+        vc.view.backgroundColor = UIColor.clearColor;
+        self.rootViewController = vc;
+        UIView *rootView = vc.view;
+
+        // Top: title + Close
+        UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(20, 30,
+                                                                   self.bounds.size.width - 100, 40)];
+        title.text = @"ISOSIO Macro Log";
+        title.textColor = UIColor.whiteColor;
+        title.font = [UIFont systemFontOfSize:18 weight:UIFontWeightSemibold];
+        [rootView addSubview:title];
+
+        UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
+        close.frame = CGRectMake(self.bounds.size.width - 90, 30, 70, 40);
+        [close setTitle:@"Close" forState:UIControlStateNormal];
+        [close setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+        close.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+        [close addTarget:self action:@selector(hide) forControlEvents:UIControlEventTouchUpInside];
+        [rootView addSubview:close];
+
+        // Middle: scrollable log text
+        _textView = [[UITextView alloc] initWithFrame:CGRectMake(10, 80,
+                                                                  self.bounds.size.width - 20,
+                                                                  self.bounds.size.height - 200)];
+        _textView.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.55];
+        _textView.textColor = [UIColor colorWithRed:0.4 green:1.0 blue:0.5 alpha:1.0];
+        _textView.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightRegular];
+        _textView.editable = NO;
+        _textView.scrollEnabled = YES;
+        _textView.alwaysBounceVertical = YES;
+        _textView.layer.cornerRadius = 6;
+        _textView.textContainerInset = UIEdgeInsetsMake(8, 8, 8, 8);
+        [rootView addSubview:_textView];
+
+        // Bottom: action buttons
+        CGFloat buttonY  = self.bounds.size.height - 90;
+        CGFloat buttonH  = 50;
+        CGFloat buttonW  = (self.bounds.size.width - 50) / 3;
+        CGFloat gap      = 10;
+
+        UIButton *copy = [self makeButton:@"Copy"
+                                    frame:CGRectMake(10, buttonY, buttonW, buttonH)
+                                    action:@selector(handleCopy)];
+        [rootView addSubview:copy];
+
+        UIButton *clear = [self makeButton:@"Clear"
+                                     frame:CGRectMake(10 + buttonW + gap, buttonY, buttonW, buttonH)
+                                     action:@selector(handleClear)];
+        [rootView addSubview:clear];
+
+        UIButton *start = [self makeButton:@"Start"
+                                     frame:CGRectMake(10 + (buttonW + gap) * 2, buttonY, buttonW, buttonH)
+                                     action:@selector(handleStart)];
+        start.backgroundColor = [UIColor colorWithRed:0.2 green:0.5 blue:0.2 alpha:0.6];
+        [rootView addSubview:start];
+    }
+    return self;
+}
+
+- (UIButton *)makeButton:(NSString *)title frame:(CGRect)frame action:(SEL)action {
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+    b.frame = frame;
+    [b setTitle:title forState:UIControlStateNormal];
+    [b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    b.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
+    b.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.18];
+    b.layer.cornerRadius = 8;
+    [b addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    return b;
+}
+
+- (void)show {
+    [self refresh];
+    self.hidden = NO;
+    MacroLog.log(@"Log window opened");
+}
+
+- (void)hide {
+    self.hidden = YES;
+}
+
+- (void)closeIfOpen {
+    if (!self.hidden) {
+        self.hidden = YES;
+        MacroLog.log(@"Log window closed (auto, gesture fired)");
+    }
+}
+
+- (void)refresh {
+    _textView.text = [MacroLog allLinesJoined];
+    if (_textView.text.length > 0) {
+        NSRange bottom = NSMakeRange(_textView.text.length - 1, 1);
+        [_textView scrollRangeToVisible:bottom];
+    }
+}
+
+- (void)handleCopy {
+    NSString *text = [MacroLog allLinesJoined];
+    [UIPasteboard generalPasteboard].string = text;
+    MacroLog.log(@"Copied %lu chars to clipboard", (unsigned long)text.length);
+    // brief on-button feedback
+    UIButton *sender = (UIButton *)[self viewWithTag:0] ?: nil;
+    (void)sender;
+}
+
+- (void)handleClear {
+    [MacroLog clear];
+    [self refresh];
+    MacroLog.log(@"Log buffer cleared by user");
+}
+
+- (void)handleStart {
+    MacroLog.log(@"Start button pressed -> closing log window and toggling macro");
+    [self hide];
+    MacroState *s = MacroState.shared;
+    if (!s->_isTargetSet) {
+        [s enterConfigMode];
+    } else {
+        [s toggle];
     }
 }
 
@@ -543,6 +832,7 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
 
 static FloatingButton      *gButton  = nil;
 static ConfigCaptureWindow *gCapture = nil;
+static LogWindow           *gLog     = nil;
 
 __attribute__((constructor))
 static void initialize() {
@@ -562,8 +852,12 @@ static void initialize() {
         gButton.hidden = NO;
 
         gCapture = [[ConfigCaptureWindow alloc] initWithFrame:screen];
-        [MacroState.shared attachCapture:gCapture];
+        gLog     = [[LogWindow alloc] initWithFrame:screen];
 
-        NSLog(@"[Macro] button @ %@, capture ready", NSStringFromCGRect(bFrame));
+        [MacroState.shared attachCapture:gCapture];
+        [MacroState.shared attachLog:gLog];
+
+        MacroLog.log(@"Button @ %@, capture + log ready", NSStringFromCGRect(bFrame));
+        MacroLog.log(@"Triple-tap the floating button to open the log window");
     }];
 }
