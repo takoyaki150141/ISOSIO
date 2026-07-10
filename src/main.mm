@@ -19,6 +19,7 @@
 // ============================================================
 
 #import <UIKit/UIKit.h>
+#import <UIKit/UIAccessibility.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #include <mach/mach_time.h>
@@ -58,10 +59,14 @@ static void resolveIOKitOnce(void) {
         void *h = dlopen(NULL, RTLD_NOW);
         if (!h) h = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
         if (!h) { gIOKitResolved = YES; gIOKitAvailable = NO; return; }
-        pIOHIDEventCreateDigitizerEvent      = dlsym(h, "IOHIDEventCreateDigitizerEvent");
-        pIOHIDEventSetIntegerValue           = dlsym(h, "IOHIDEventSetIntegerValue");
-        pIOHIDEventSystemClientCreate        = dlsym(h, "IOHIDEventSystemClientCreate");
-        pIOHIDEventSystemClientDispatchEvent = dlsym(h, "IOHIDEventSystemClientDispatchEvent");
+        // dlsym returns void*; assigning to a function-pointer type via
+        // implicit conversion is rejected by modern clang with -Werror.
+        // Cast through (void**) which is the POSIX-portable way to get
+        // a function pointer out of dlsym.
+        *(void **)&pIOHIDEventCreateDigitizerEvent      = dlsym(h, "IOHIDEventCreateDigitizerEvent");
+        *(void **)&pIOHIDEventSetIntegerValue           = dlsym(h, "IOHIDEventSetIntegerValue");
+        *(void **)&pIOHIDEventSystemClientCreate        = dlsym(h, "IOHIDEventSystemClientCreate");
+        *(void **)&pIOHIDEventSystemClientDispatchEvent = dlsym(h, "IOHIDEventSystemClientDispatchEvent");
         gIOKitResolved = YES;
         gIOKitAvailable = (pIOHIDEventCreateDigitizerEvent &&
                            pIOHIDEventSetIntegerValue &&
@@ -1049,6 +1054,15 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
         b.layer.borderWidth = isActive ? 1.5 : 0;
         b.layer.borderColor = UIColor.whiteColor.CGColor;
     }
+}
+
+- (void)refresh {
+    _textView.text = [MacroLog allLinesJoined];
+    if (_textView.text.length > 0) {
+        NSRange bottom = NSMakeRange(_textView.text.length - 1, 1);
+        [_textView scrollRangeToVisible:bottom];
+    }
+    [self refreshStrategyButtons];
 }
 
 @end
