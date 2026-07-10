@@ -286,12 +286,20 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
         self.backgroundColor = UIColor.clearColor;
         self.clipsToBounds = NO;
 
+        // iOS 26 requires every UIWindow to have a rootViewController at the
+        // end of application launch. Attach a transparent dummy so UIKit's
+        // scene-lifecycle assertion passes.
+        UIViewController *vc = [[UIViewController alloc] init];
+        vc.view.backgroundColor = UIColor.clearColor;
+        self.rootViewController = vc;
+        UIView *rootView = vc.view;
+
         // Backing view: covers the whole window, makes the whole square tappable
         CGRect backingFrame = CGRectInset(self.bounds, -kButtonTouchPadding, -kButtonTouchPadding);
         _backing = [[UIView alloc] initWithFrame:backingFrame];
         _backing.backgroundColor = UIColor.clearColor;
         _backing.userInteractionEnabled = YES;
-        [self addSubview:_backing];
+        [rootView addSubview:_backing];
 
         // Visible circle (slightly smaller than the window for visual margin)
         CGRect circleFrame = CGRectInset(self.bounds, 3, 3);
@@ -301,14 +309,14 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
         _circle.layer.borderWidth = 2.0;
         _circle.layer.borderColor = [UIColor colorWithRed:0.0 green:0.94 blue:1.0 alpha:0.8].CGColor;
         _circle.userInteractionEnabled = NO;
-        [self addSubview:_circle];
+        [rootView addSubview:_circle];
 
         _label = [[UILabel alloc] initWithFrame:_circle.bounds];
         _label.textAlignment = NSTextAlignmentCenter;
         _label.numberOfLines = 2;
         _label.textColor = [UIColor colorWithRed:0.0 green:0.94 blue:1.0 alpha:1.0];
         _label.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
-        [self addSubview:_label];
+        [rootView addSubview:_label];
 
         // Gestures
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
@@ -394,10 +402,17 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
         self.backgroundColor = UIColor.clearColor;
         self.hidden = YES;
 
+        // iOS 26 requires every UIWindow to have a rootViewController. Attach
+        // a transparent dummy so UIKit's scene-lifecycle assertion passes.
+        UIViewController *vc = [[UIViewController alloc] init];
+        vc.view.backgroundColor = UIColor.clearColor;
+        self.rootViewController = vc;
+        UIView *rootView = vc.view;
+
         _dim = [[UIView alloc] initWithFrame:self.bounds];
         _dim.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.35];
         _dim.userInteractionEnabled = NO;
-        [self addSubview:_dim];
+        [rootView addSubview:_dim];
 
         _hint = [[UILabel alloc] initWithFrame:CGRectMake(20, self.bounds.size.height/2 - 60,
                                                           self.bounds.size.width - 40, 120)];
@@ -407,7 +422,7 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
         _hint.textColor = UIColor.whiteColor;
         _hint.font = [UIFont systemFontOfSize:22 weight:UIFontWeightSemibold];
         _hint.userInteractionEnabled = NO;
-        [self addSubview:_hint];
+        [rootView addSubview:_hint];
 
         _indicator = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 36, 36)];
         _indicator.layer.cornerRadius = 18;
@@ -416,7 +431,7 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
         _indicator.backgroundColor = [UIColor colorWithRed:1.0 green:0.3 blue:0.3 alpha:0.4];
         _indicator.hidden = YES;
         _indicator.userInteractionEnabled = NO;
-        [self addSubview:_indicator];
+        [rootView addSubview:_indicator];
     }
     return self;
 }
