@@ -1,15 +1,16 @@
-TARGET := iphone:clang:latest:13.0
+TARGET := iphone:clang:latest:16.0
 ARCHS = arm64 arm64e
 
 include $(THEOS)/makefiles/common.mk
 
 LIBRARY_NAME = MyGameCheat
 
-MyGameCheat_FILES = src/main.mm src/MemoryScanner.cpp src/SpeedHack.cpp fishhook/fishhook.c
-MyGameCheat_CFLAGS = -fobjc-arc
+# Only main.mm — MemoryScanner / SpeedHack / fishhook removed for the macro tool build.
+MyGameCheat_FILES = src/main.mm
+MyGameCheat_CFLAGS = -fobjc-arc -Wno-unused-variable
 MyGameCheat_CXXFLAGS = -std=c++17
 MyGameCheat_OBJCXXFLAGS = -std=c++17
 MyGameCheat_LDFLAGS = -Wl,-segalign,4000
-MyGameCheat_FRAMEWORKS = UIKit WebKit
+MyGameCheat_FRAMEWORKS = UIKit IOKit
 
 include $(THEOS_MAKE_PATH)/library.mk
