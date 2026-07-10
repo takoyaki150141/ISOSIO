@@ -22,6 +22,9 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #include <mach/mach_time.h>
+#import <IOKit/hid/IOHIDEvent.h>
+#import <IOKit/hid/IOHIDEventSystemClient.h>
+#import <IOKit/hid/IOHIDEventTypes.h>
 
 // ============================================================
 // CONFIG
@@ -34,6 +37,32 @@ static const NSInteger kIntervalCount     = sizeof(kIntervals) / sizeof(kInterva
 static const CGFloat kTargetStopRadius    = 30.0;  // finger-tap tolerance for stop-on-tap
 
 static NSInteger gIntervalIndex = 1;     // default 100 ms
+
+// ============================================================
+// TAP STRATEGY
+// Different ways to "synthesize a tap" on a target view. The user picks
+// one from the log window; the active strategy is shown there too.
+// ============================================================
+
+typedef NS_ENUM(NSInteger, TapStrategy) {
+    TapStrategyControlAction = 0,   // sendActionsForControlEvents: on the closest UIControl
+    TapStrategyTapRecognizer,       // setState:Recognized on the closest UITapGestureRecognizer
+    TapStrategyAccessibility,       // accessibilityActivate on the closest accessible element
+    TapStrategyIOKitHID,            // IOHIDEvent digitizer touch (jailbreak-grade; works for games)
+    TapStrategyCount
+};
+
+static TapStrategy gCurrentStrategy = TapStrategyControlAction;
+
+static NSString *TapStrategyName(TapStrategy s) {
+    switch (s) {
+        case TapStrategyControlAction: return @"ControlAction";
+        case TapStrategyTapRecognizer: return @"TapRecognizer";
+        case TapStrategyAccessibility: return @"Accessibility";
+        case TapStrategyIOKitHID:      return @"IOKitHID";
+        default: return @"?";
+    }
+}
 
 // ============================================================
 // HELPERS
@@ -271,6 +300,19 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
     [_button refreshDisplay];
 }
 
+- (void)setStrategy:(TapStrategy)s {
+    gCurrentStrategy = s;
+    MACRO_LOG(@"Strategy -> %@", TapStrategyName(s));
+    [_button refreshDisplay];
+}
+
+- (TapStrategy)currentStrategy { return gCurrentStrategy; }
+
+- (void)cycleStrategy {
+    TapStrategy next = (TapStrategy)((gCurrentStrategy + 1) % TapStrategyCount);
+    [self setStrategy:next];
+}
+
 - (NSString *)statusText {
     if (_isConfigMode) return @"TAP";
     if (_isActive)     return @"ON";
@@ -293,31 +335,106 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
         MACRO_LOG(@"performTap: no target window found, skipping");
         return;
     }
-    MACRO_LOG(@"performTap: target=(%.0f,%.0f) window=%@",
-                 target.x, target.y, NSStringFromClass(targetWindow.class));
 
     UIView *hit = [targetWindow hitTest:target withEvent:nil];
     if (!hit) {
-        MACRO_LOG(@"performTap: hitTest returned nil — point is outside content");
+        MACRO_LOG(@"performTap: hitTest returned nil (strategy %@)", TapStrategyName(gCurrentStrategy));
         return;
     }
 
-    // Strategy 1: find a UIControl and fire its action
-    UIControl *ctrl = [self findControlIn:hit];
-    if (ctrl) {
-        MACRO_LOG(@"performTap: strategy 1 — sendActions on UIControl %@", NSStringFromClass(ctrl.class));
-        [ctrl sendActionsForControlEvents:UIControlEventTouchUpInside];
-        return;
-    }
+    switch (gCurrentStrategy) {
+        case TapStrategyControlAction: {
+            UIControl *ctrl = [self findControlIn:hit];
+            if (ctrl) {
+                MACRO_LOG(@"performTap: ControlAction on %@", NSStringFromClass(ctrl.class));
+                [ctrl sendActionsForControlEvents:UIControlEventTouchUpInside];
+                return;
+            }
+            MACRO_LOG(@"performTap: ControlAction — no UIControl in hierarchy under %@",
+                     NSStringFromClass(hit.class));
+            break;
+        }
+        case TapStrategyTapRecognizer: {
+            UITapGestureRecognizer *tap = [self findTapGestureIn:hit];
+            if (tap && tap.state == UIGestureRecognizerStatePossible) {
+                MACRO_LOG(@"performTap: TapRecognizer — firing");
+                [tap setState:UIGestureRecognizerStateRecognized];
+                return;
+            }
+            MACRO_LOG(@"performTap: TapRecognizer — no recognizer in hierarchy");
+            break;
+        }
+        case TapStrategyAccessibility: {
+            // Walk up from hit, looking for an accessibility container that
+            // can produce an element at the target point.
+            UIView *v = hit;
+            UIAccessibilityElement *element = nil;
+            while (v && !element) {
+                if ([v respondsToSelector:@selector(accessibilityElementAtPoint:)]) {
+                    CGPoint local = [v convertPoint:target fromView:nil];
+                    id e = [v accessibilityElementAtPoint:local];
+                    if ([e isKindOfClass:[UIAccessibilityElement class]]) element = e;
+                }
+                v = v.superview;
+            }
+            id target_ = element ?: hit;
+            if ([target_ respondsToSelector:@selector(accessibilityActivate)]) {
+                MACRO_LOG(@"performTap: Accessibility — calling accessibilityActivate on %@",
+                         NSStringFromClass([target_ class]));
+                BOOL ok = [target_ accessibilityActivate];
+                MACRO_LOG(@"performTap: Accessibility returned %d", ok);
+                return;
+            }
+            MACRO_LOG(@"performTap: Accessibility — no activatable element");
+            break;
+        }
+        case TapStrategyIOKitHID: {
+            // Down + brief hold + Up. This bypasses UIKit entirely; works
+            // for games / Metal surfaces but typically requires the IOKit
+            // entitlement / a jailbroken runtime to actually dispatch.
+            IOHIDEventSystemClientRef client = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
+            if (!client) {
+                MACRO_LOG(@"performTap: IOKitHID — IOHIDEventSystemClientCreate returned NULL (not available in this process)");
+                break;
+            }
+            uint64_t ts = mach_absolute_time();
 
-    // Strategy 2: trigger a UITapGestureRecognizer
-    UITapGestureRecognizer *tap = [self findTapGestureIn:hit];
-    if (tap && tap.state == UIGestureRecognizerStatePossible) {
-        MACRO_LOG(@"performTap: strategy 2 — firing UITapGestureRecognizer");
-        [tap setState:UIGestureRecognizerStateRecognized];
-        return;
+            IOHIDEventRef down = IOHIDEventCreateDigitizerEvent(
+                kCFAllocatorDefault,
+                kIOHIDDigitizerTransducerTypeTouch,
+                1,
+                kIOHIDDigitizerEventTouch,
+                ts, 0,
+                (double)target.x, (double)target.y,
+                0, 0, 0, 0);
+            if (down) {
+                IOHIDEventSetIntegerValue(down, kIOHIDEventFieldDigitizerCollection, 1);
+                IOHIDEventSystemClientDispatchEvent(client, down);
+                CFRelease(down);
+            }
+            usleep(20000);   // 20 ms hold
+            uint64_t ts2 = mach_absolute_time();
+            IOHIDEventRef up = IOHIDEventCreateDigitizerEvent(
+                kCFAllocatorDefault,
+                kIOHIDDigitizerTransducerTypeTouch,
+                1,
+                kIOHIDDigitizerEventTouch,
+                ts2,
+                kIOHIDDigitizerEventTouchEnd,
+                (double)target.x, (double)target.y,
+                0, 0, 0, 0);
+            if (up) {
+                IOHIDEventSetIntegerValue(up, kIOHIDEventFieldDigitizerCollection, 1);
+                IOHIDEventSystemClientDispatchEvent(client, up);
+                CFRelease(up);
+            }
+            CFRelease(client);
+            MACRO_LOG(@"performTap: IOKitHID — dispatched down+up at (%.0f,%.0f)", target.x, target.y);
+            return;
+        }
+        default:
+            break;
     }
-    MACRO_LOG(@"performTap: no UIControl / gesture found — point may be on a non-UIKit surface (game/etc.)");
 }
 
 - (UIControl *)findControlIn:(UIView *)view {
@@ -393,6 +510,7 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
 
         // Gestures
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
+        pan.maximumNumberOfTouches = 1;        // keep pan 1-finger only
         [self addGestureRecognizer:pan];
 
         UITapGestureRecognizer *single = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleSingleTap)];
@@ -407,6 +525,11 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
         trp.numberOfTapsRequired = 3;
         [self addGestureRecognizer:trp];
         [dbl requireGestureRecognizerToFail:trp];
+
+        UITapGestureRecognizer *twoFinger = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleTwoFingerTap)];
+        twoFinger.numberOfTouchesRequired = 2;
+        twoFinger.numberOfTapsRequired = 1;
+        [self addGestureRecognizer:twoFinger];
 
         UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleLongPress:)];
         lp.minimumPressDuration = 0.55;
@@ -461,6 +584,12 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
         if (s->_log.hidden) [s->_log show];
         else                [s->_log hide];
     }
+}
+
+- (void)handleTwoFingerTap {
+    MacroState *s = MacroState.shared;
+    [s->_log closeIfOpen];
+    [s cycleStrategy];
 }
 
 - (void)refreshDisplay {
@@ -759,6 +888,35 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
                                      action:@selector(handleStart)];
         start.backgroundColor = [UIColor colorWithRed:0.2 green:0.5 blue:0.2 alpha:0.6];
         [rootView addSubview:start];
+
+        // Strategy picker: 4 small buttons in a row, just above the text view.
+        // Tapping sets the active strategy; active one is highlighted.
+        NSMutableArray *btns = [NSMutableArray array];
+        CGFloat stratY = 78;
+        CGFloat stratH = 36;
+        CGFloat stratW = (self.bounds.size.width - 50) / 4;
+        NSArray *labels = @[ @"Control", @"Gesture", @"Access", @"IOKit" ];
+        for (NSInteger i = 0; i < 4; i++) {
+            CGRect fr = CGRectMake(10 + i * (stratW + 10.0/4.0), stratY, stratW, stratH);
+            UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+            b.frame = fr;
+            b.tag = i;
+            [b setTitle:labels[i] forState:UIControlStateNormal];
+            [b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+            b.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+            b.layer.cornerRadius = 6;
+            [b addTarget:self action:@selector(handleStrategy:) forControlEvents:UIControlEventTouchUpInside];
+            [rootView addSubview:b];
+            [btns addObject:b];
+        }
+        _strategyButtons = btns;
+        [self refreshStrategyButtons];
+
+        // Push the text view down to make room for the strategy row.
+        CGRect tv = _textView.frame;
+        tv.origin.y = stratY + stratH + 8;
+        tv.size.height = self.bounds.size.height - tv.origin.y - (self.bounds.size.height - buttonY) - 8;
+        _textView.frame = tv;
     }
     return self;
 }
@@ -824,6 +982,33 @@ static UIWindow *foregroundKeyWindow(UIApplication *app) {
     } else {
         [s toggle];
     }
+}
+
+- (void)handleStrategy:(UIButton *)sender {
+    TapStrategy s = (TapStrategy)sender.tag;
+    [MacroState.shared setStrategy:s];
+    [self refreshStrategyButtons];
+}
+
+- (void)refreshStrategyButtons {
+    TapStrategy cur = [MacroState.shared currentStrategy];
+    UIColor *active   = [UIColor colorWithRed:0.0 green:0.6 blue:0.4 alpha:0.85];
+    UIColor *inactive = [UIColor colorWithWhite:1.0 alpha:0.18];
+    for (UIButton *b in _strategyButtons) {
+        BOOL isActive = ((TapStrategy)b.tag == cur);
+        b.backgroundColor = isActive ? active : inactive;
+        b.layer.borderWidth = isActive ? 1.5 : 0;
+        b.layer.borderColor = UIColor.whiteColor.CGColor;
+    }
+}
+
+- (void)refresh {
+    _textView.text = [MacroLog allLinesJoined];
+    if (_textView.text.length > 0) {
+        NSRange bottom = NSMakeRange(_textView.text.length - 1, 1);
+        [_textView scrollRangeToVisible:bottom];
+    }
+    [self refreshStrategyButtons];
 }
 
 @end

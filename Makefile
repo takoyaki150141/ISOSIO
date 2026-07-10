@@ -11,6 +11,6 @@ MyGameCheat_CFLAGS = -fobjc-arc -Wno-unused-variable
 MyGameCheat_CXXFLAGS = -std=c++17
 MyGameCheat_OBJCXXFLAGS = -std=c++17
 MyGameCheat_LDFLAGS = -Wl,-segalign,4000
-MyGameCheat_FRAMEWORKS = UIKit
+MyGameCheat_FRAMEWORKS = UIKit IOKit
 
 include $(THEOS_MAKE_PATH)/library.mk
