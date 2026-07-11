@@ -315,30 +315,42 @@ static NSInteger gCurrentFeature = -1;
 // FloatingWindow
 // ============================================================
 //
-// Two visual states:
-//   collapsed  → 50x50 circle ("AG"), just the floating button.
-//   expanded   → circle grows slightly to 60x60, then two
-//                option buttons (メモリ検索 / ポイントスキャン)
-//                fade in stacked below the circle, full window
-//                width 200pt.
+// Visual / interaction model ported from DLGMemor's DLGMemUIView
+// (see DLGMemor/memui/views/DLGMemUIView.m).  DLGMemor is the
+// reference for drawing, menu display, and tap; we re-implement
+// the same patterns here without touching DLGMemor.
 //
-// Tapping the circle toggles between the two states.  Tapping
-// an option opens the OverlayWindow pre-configured for that
-// feature (OverlayWindow.applyCurrentFeature pushes a
-// window.setFeature(...) call into the WKWebView).
+//   collapsed  → 50x50 black circle ("AG") with a cyan border.
+//                cornerRadius = width/2, alpha = 0.5, no shadow.
+//   expanded   → 200x180 black panel, cornerRadius = 18pt,
+//                alpha = 0.8, drop shadow (0.45 / 0,6 / 14pt).
+//                The "AG" chip grows to 60x60 at the top-left,
+//                and two option buttons fade in below it.
 //
-// Dragging: the gesture is attached to the circle only, and the
-// circle is always at (0, 0) inside the window in both states,
-// so dragging works the same in both states.  self.collapsedFrame
-// is updated every time the window moves so the expand anchor
-// (top-left of the circle) follows the user's drag.
+// Tapping the AG chip toggles expand/collapse (user preference).
+// Tapping an option opens the OverlayWindow with that feature.
+// Tapping the empty area of the panel also collapses — same as
+// DLGMemor's handleGesture: tap-anywhere-but-the-textfield-to-
+// collapse pattern, generalised to "anywhere-but-a-button".
 //
-static const CGFloat kCollapsedSize       = 50.0;
-static const CGFloat kExpandedCircleSize  = 60.0;
-static const CGFloat kExpandedWidth       = 200.0;
-static const CGFloat kExpandedHeight      = 180.0;
-static const CGFloat kOptionHeight        = 40.0;
-static const CGFloat kOptionVerticalGap   = 8.0;
+// All animations use UIViewAnimationOptionBeginFromCurrentState
+// for smooth state-to-state transitions, 0.25s duration, and
+// animate the panel's frame, cornerRadius, alpha, and shadow
+// opacity in the same block (the same combo DLGMemor uses).
+//
+static const CGFloat kCollapsedSize         = 50.0;
+static const CGFloat kExpandedCircleSize    = 60.0;
+static const CGFloat kExpandedWidth         = 200.0;
+static const CGFloat kExpandedHeight        = 180.0;
+static const CGFloat kOptionHeight          = 44.0;
+static const CGFloat kOptionVerticalGap     = 4.0;
+static const CGFloat kCollapsedAlpha        = 0.5;
+static const CGFloat kExpandedAlpha         = 0.8;
+static const CGFloat kExpandedCornerRadius  = 18.0;
+static const CGFloat kShadowOpacityExpanded = 0.45;
+static const CGFloat kShadowOffsetY         = 6.0;
+static const CGFloat kShadowRadius          = 14.0;
+static const NSTimeInterval kAnimDuration   = 0.25;
 
 @implementation FloatingWindow
 
@@ -346,12 +358,27 @@ static const CGFloat kOptionVerticalGap   = 8.0;
     self = [super initWithFrame:frame];
     if (self) {
         self.windowLevel = UIWindowLevelAlert + 100;
+        // backgroundColor flips to black when expanded (see
+        // setExpanded:animated:).  Cleared back to transparent
+        // on collapse so the host app shows through.
         self.backgroundColor = [UIColor clearColor];
 
         // iOS 15+ 対応: rootViewController を設定
         UIViewController *rootVC = [[UIViewController alloc] init];
         rootVC.view.backgroundColor = [UIColor clearColor];
         self.rootViewController = rootVC;
+
+        // ----- Layer style (DLGMemor pattern) -----
+        // masksToBounds must be NO so the shadow can extend
+        // outside the window's frame.  cornerRadius and
+        // shadowOpacity are animated in setExpanded:animated:.
+        self.layer.masksToBounds = NO;
+        self.layer.cornerRadius = kCollapsedSize / 2.0;
+        self.layer.shadowColor   = [UIColor blackColor].CGColor;
+        self.layer.shadowOpacity = 0.0;             // no shadow when collapsed
+        self.layer.shadowOffset  = CGSizeMake(0, kShadowOffsetY);
+        self.layer.shadowRadius  = kShadowRadius;
+        self.alpha = kCollapsedAlpha;               // 0.5 when collapsed
 
         // Remember the small circle's frame on screen so the
         // window can grow from this exact anchor when expanded.
@@ -377,44 +404,45 @@ static const CGFloat kOptionVerticalGap   = 8.0;
         [self.btnFloat addTarget:self action:@selector(btnTapped) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:self.btnFloat];
 
-        // ---- Option button 1: メモリ検索 ----
-        CGFloat optionX = 0;
+        // ---- Tap gesture: DLGMemor-style "tap empty area to
+        //      collapse".  Always active; the handler decides
+        //      what to do based on tap location + state.  We
+        //      set cancelsTouchesInView = NO so the AG button
+        //      and option buttons still receive their own
+        //      touchUpInside events. ----
+        UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleTap:)];
+        tap.cancelsTouchesInView = NO;
+        [self addGestureRecognizer:tap];
+
+        // ---- Option buttons (DLGMemor system-button style:
+        //      white text, no background, no border — just text
+        //      on the panel's black background).  Hidden by
+        //      default; shown + faded in by setExpanded:. ----
         CGFloat optionY1 = kExpandedCircleSize + 10;
         CGFloat optionY2 = optionY1 + kOptionHeight + kOptionVerticalGap;
-        UIColor *optionBg = [UIColor colorWithRed:0.05 green:0.05 blue:0.08 alpha:0.92];
-        UIColor *optionBorder = [UIColor colorWithRed:0.0 green:0.94 blue:1.0 alpha:0.45];
-        UIFont *optionFont = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+        UIFont  *optionFont = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
 
-        self.btnMemorySearch = [UIButton buttonWithType:UIButtonTypeCustom];
-        self.btnMemorySearch.frame = CGRectMake(optionX, optionY1, kExpandedWidth, kOptionHeight);
-        self.btnMemorySearch.backgroundColor = optionBg;
-        self.btnMemorySearch.layer.cornerRadius = 12.0;
-        self.btnMemorySearch.layer.borderWidth = 1.0;
-        self.btnMemorySearch.layer.borderColor = optionBorder.CGColor;
+        self.btnMemorySearch = [UIButton buttonWithType:UIButtonTypeSystem];
+        self.btnMemorySearch.frame = CGRectMake(0, optionY1, kExpandedWidth, kOptionHeight);
         self.btnMemorySearch.alpha = 0.0;
         self.btnMemorySearch.hidden = YES;
         [self.btnMemorySearch setTitle:@"🔍  メモリ検索" forState:UIControlStateNormal];
         [self.btnMemorySearch setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
         self.btnMemorySearch.titleLabel.font = optionFont;
         self.btnMemorySearch.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
-        self.btnMemorySearch.contentEdgeInsets = UIEdgeInsetsMake(0, 14, 0, 14);
+        self.btnMemorySearch.contentEdgeInsets = UIEdgeInsetsMake(0, 16, 0, 16);
         [self.btnMemorySearch addTarget:self action:@selector(optionMemorySearchTapped) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:self.btnMemorySearch];
 
-        // ---- Option button 2: ポイントスキャン ----
-        self.btnPointScan = [UIButton buttonWithType:UIButtonTypeCustom];
-        self.btnPointScan.frame = CGRectMake(optionX, optionY2, kExpandedWidth, kOptionHeight);
-        self.btnPointScan.backgroundColor = optionBg;
-        self.btnPointScan.layer.cornerRadius = 12.0;
-        self.btnPointScan.layer.borderWidth = 1.0;
-        self.btnPointScan.layer.borderColor = optionBorder.CGColor;
+        self.btnPointScan = [UIButton buttonWithType:UIButtonTypeSystem];
+        self.btnPointScan.frame = CGRectMake(0, optionY2, kExpandedWidth, kOptionHeight);
         self.btnPointScan.alpha = 0.0;
         self.btnPointScan.hidden = YES;
         [self.btnPointScan setTitle:@"📌  ポイントスキャン" forState:UIControlStateNormal];
         [self.btnPointScan setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
         self.btnPointScan.titleLabel.font = optionFont;
         self.btnPointScan.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
-        self.btnPointScan.contentEdgeInsets = UIEdgeInsetsMake(0, 14, 0, 14);
+        self.btnPointScan.contentEdgeInsets = UIEdgeInsetsMake(0, 16, 0, 16);
         [self.btnPointScan addTarget:self action:@selector(optionPointScanTapped) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:self.btnPointScan];
     }
@@ -446,6 +474,27 @@ static const CGFloat kOptionVerticalGap   = 8.0;
     self.collapsedFrame = cur;
 }
 
+// DLGMemor-style "tap empty area to collapse".  The recogniser
+// fires for every tap on the panel; we let the AG button and the
+// two option buttons handle their own taps (they sit on top of
+// the panel) and only collapse when the user tapped the "blank"
+// area around them.  Same logic as DLGMemUIView.handleGesture:,
+// just adapted to a button-based menu instead of a text-field
+// menu.
+- (void)handleTap:(UITapGestureRecognizer *)sender {
+    if (sender.state != UIGestureRecognizerStateEnded) return;
+
+    CGPoint pt = [sender locationInView:self];
+
+    if (CGRectContainsPoint(self.btnFloat.frame, pt))       return;  // btnTapped
+    if (CGRectContainsPoint(self.btnMemorySearch.frame, pt)) return;  // optionMemorySearchTapped
+    if (CGRectContainsPoint(self.btnPointScan.frame, pt))   return;  // optionPointScanTapped
+
+    if (self.expanded) {
+        [self setExpanded:NO animated:YES];
+    }
+}
+
 - (void)btnTapped {
     // Tap on the circle in either state toggles expand/collapse.
     if (self.expanded) {
@@ -463,52 +512,73 @@ static const CGFloat kOptionVerticalGap   = 8.0;
     CGFloat y = self.collapsedFrame.origin.y;
 
     if (expanded) {
-        // Grow the window to the expanded size.  The circle is
-        // always at (0, 0) inside the window so it doesn't move
-        // visually.  Make the option buttons visible immediately
-        // (so they can be hit-tested) and animate them in.
-        self.frame = CGRectMake(x, y, kExpandedWidth, kExpandedHeight);
+        // Make the option buttons visible immediately so they
+        // can be hit-tested while the spring animation runs.
         self.btnMemorySearch.hidden = NO;
         self.btnPointScan.hidden   = NO;
 
-        CGRect bigCircle = CGRectMake(0, 0, kExpandedCircleSize, kExpandedCircleSize);
+        CGRect targetFrame = CGRectMake(x, y, kExpandedWidth, kExpandedHeight);
+        CGRect bigCircle   = CGRectMake(0, 0, kExpandedCircleSize, kExpandedCircleSize);
+
         void (^expandAnim)(void) = ^{
+            self.frame = targetFrame;
+            self.backgroundColor = [UIColor blackColor];
+            self.alpha = kExpandedAlpha;
+            self.layer.cornerRadius  = kExpandedCornerRadius;
+            self.layer.shadowOpacity = kShadowOpacityExpanded;
             self.btnFloat.frame = bigCircle;
             self.btnFloat.layer.cornerRadius = kExpandedCircleSize / 2.0;
             self.btnMemorySearch.alpha = 1.0;
             self.btnPointScan.alpha   = 1.0;
         };
+        void (^expandDone)(BOOL) = ^(BOOL finished) {
+            // Final-state pin (DLGMemor does the same in its
+            // expand completion block to avoid animation
+            // rounding on the last frame).
+            self.frame = targetFrame;
+            self.backgroundColor = [UIColor blackColor];
+            self.alpha = kExpandedAlpha;
+            self.layer.cornerRadius  = kExpandedCornerRadius;
+            self.layer.shadowOpacity = kShadowOpacityExpanded;
+        };
+
         if (animated) {
-            [UIView animateWithDuration:0.32
-                                  delay:0
-                 usingSpringWithDamping:0.78
-                  initialSpringVelocity:0
-                                options:0
+            [UIView animateWithDuration:kAnimDuration
+                                  delay:0.0f
+                                options:UIViewAnimationOptionBeginFromCurrentState
                              animations:expandAnim
-                             completion:nil];
+                             completion:expandDone];
         } else {
             expandAnim();
+            expandDone(YES);
         }
     } else {
-        // Shrink the circle and fade the option buttons, then
-        // restore the window to its collapsed size.
+        CGRect targetFrame = CGRectMake(x, y, kCollapsedSize, kCollapsedSize);
         CGRect smallCircle = CGRectMake(0, 0, kCollapsedSize, kCollapsedSize);
 
         void (^collapseAnim)(void) = ^{
+            self.alpha = kCollapsedAlpha;
+            self.layer.cornerRadius  = kCollapsedSize / 2.0;
+            self.layer.shadowOpacity = 0.0;
             self.btnFloat.frame = smallCircle;
             self.btnFloat.layer.cornerRadius = kCollapsedSize / 2.0;
             self.btnMemorySearch.alpha = 0.0;
             self.btnPointScan.alpha   = 0.0;
         };
         void (^collapseDone)(BOOL) = ^(BOOL finished) {
+            self.frame = targetFrame;
+            self.backgroundColor = [UIColor clearColor];
+            self.alpha = kCollapsedAlpha;
+            self.layer.cornerRadius  = kCollapsedSize / 2.0;
+            self.layer.shadowOpacity = 0.0;
             self.btnMemorySearch.hidden = YES;
             self.btnPointScan.hidden   = YES;
-            self.frame = CGRectMake(x, y, kCollapsedSize, kCollapsedSize);
         };
+
         if (animated) {
-            [UIView animateWithDuration:0.22
-                                  delay:0
-                                options:UIViewAnimationOptionCurveEaseIn
+            [UIView animateWithDuration:kAnimDuration
+                                  delay:0.0f
+                                options:UIViewAnimationOptionBeginFromCurrentState
                              animations:collapseAnim
                              completion:collapseDone];
         } else {
@@ -534,7 +604,7 @@ static const CGFloat kOptionVerticalGap   = 8.0;
     // overlay after the collapse animation finishes.
     [self setExpanded:NO animated:YES];
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kAnimDuration * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         self.hidden = YES;
         gOverlayWindow.hidden = NO;
