@@ -334,6 +334,10 @@ static OverlayWindow *gOverlayWindow = nil;
     CGPoint translation = [sender translationInView:self];
     CGPoint newCenter = CGPointMake(self.center.x + translation.x, self.center.y + translation.y);
     
+    // Clamp to screen bounds (don't let the button go off-screen)
+    // but DO NOT snap to the nearest edge.  The user dragged it
+    // somewhere specific, so on release the button stays exactly
+    // where they put it.
     CGRect screenBounds = [UIScreen mainScreen].bounds;
     newCenter.x = MAX(self.frame.size.width / 2, MIN(screenBounds.size.width - self.frame.size.width / 2, newCenter.x));
     newCenter.y = MAX(self.frame.size.height / 2, MIN(screenBounds.size.height - self.frame.size.height / 2, newCenter.y));
