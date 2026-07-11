@@ -267,13 +267,21 @@ void MemoryScanner::lockValue(uintptr_t address, ValueType type, const std::stri
             return;
         }
     }
-    lockedValues.push_back({address, type, valueStr});
+    LockedValue lv;
+    lv.address = address;
+    lv.type = type;
+    lv.value = valueStr;
+    lockedValues.push_back(lv);
 }
 
 void MemoryScanner::unlockValue(uintptr_t address) {
-    lockedValues.erase(std::remove_if(lockedValues.begin(), lockedValues.end(),
-        [address](const LockedValue& lv) { return lv.address == address; }),
-        lockedValues.end());
+    for (std::vector<LockedValue>::iterator it = lockedValues.begin(); it != lockedValues.end(); ) {
+        if (it->address == address) {
+            it = lockedValues.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 void MemoryScanner::updateLockedValues() {
@@ -311,25 +319,30 @@ void MemoryScanner::pinAddress(mach_vm_address_t address, ValueType type) {
     p.type = type;
     p.value = "?";
 
+    std::stringstream ss_val;
     if (type == Type_i32) {
         int32_t v;
         if (readMemorySafe<int32_t>(address, v)) {
-            p.value = std::to_string(v);
+            ss_val << v;
+            p.value = ss_val.str();
         }
     } else if (type == Type_i64) {
         int64_t v;
         if (readMemorySafe<int64_t>(address, v)) {
-            p.value = std::to_string(v);
+            ss_val << v;
+            p.value = ss_val.str();
         }
     } else if (type == Type_Float) {
         float v;
         if (readMemorySafe<float>(address, v)) {
-            p.value = std::to_string(v);
+            ss_val << v;
+            p.value = ss_val.str();
         }
     } else if (type == Type_Double) {
         double v;
         if (readMemorySafe<double>(address, v)) {
-            p.value = std::to_string(v);
+            ss_val << v;
+            p.value = ss_val.str();
         }
     }
     (void)size;  // for future use if we add more types
@@ -338,15 +351,18 @@ void MemoryScanner::pinAddress(mach_vm_address_t address, ValueType type) {
 }
 
 void MemoryScanner::unpinAddress(mach_vm_address_t address) {
-    pinnedAddresses.erase(
-        std::remove_if(pinnedAddresses.begin(), pinnedAddresses.end(),
-            [address](const PinnedAddress& p) { return p.address == address; }),
-        pinnedAddresses.end());
+    for (std::vector<PinnedAddress>::iterator it = pinnedAddresses.begin(); it != pinnedAddresses.end(); ) {
+        if (it->address == address) {
+            it = pinnedAddresses.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 bool MemoryScanner::isPinned(mach_vm_address_t address) const {
-    for (const auto& p : pinnedAddresses) {
-        if (p.address == address) return true;
+    for (std::vector<PinnedAddress>::const_iterator it = pinnedAddresses.begin(); it != pinnedAddresses.end(); ++it) {
+        if (it->address == address) return true;
     }
     return false;
 }
@@ -354,18 +370,31 @@ bool MemoryScanner::isPinned(mach_vm_address_t address) const {
 void MemoryScanner::refreshPinned() {
     for (std::vector<PinnedAddress>::iterator it = pinnedAddresses.begin(); it != pinnedAddresses.end(); ++it) {
         PinnedAddress& p = *it;
+        std::stringstream ss_val;
         if (p.type == Type_i32) {
             int32_t v;
-            if (readMemorySafe<int32_t>(p.address, v)) p.value = std::to_string(v);
+            if (readMemorySafe<int32_t>(p.address, v)) {
+                ss_val << v;
+                p.value = ss_val.str();
+            }
         } else if (p.type == Type_i64) {
             int64_t v;
-            if (readMemorySafe<int64_t>(p.address, v)) p.value = std::to_string(v);
+            if (readMemorySafe<int64_t>(p.address, v)) {
+                ss_val << v;
+                p.value = ss_val.str();
+            }
         } else if (p.type == Type_Float) {
             float v;
-            if (readMemorySafe<float>(p.address, v)) p.value = std::to_string(v);
+            if (readMemorySafe<float>(p.address, v)) {
+                ss_val << v;
+                p.value = ss_val.str();
+            }
         } else if (p.type == Type_Double) {
             double v;
-            if (readMemorySafe<double>(p.address, v)) p.value = std::to_string(v);
+            if (readMemorySafe<double>(p.address, v)) {
+                ss_val << v;
+                p.value = ss_val.str();
+            }
         }
     }
 }
