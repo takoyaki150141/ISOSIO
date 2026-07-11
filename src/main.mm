@@ -1,14 +1,14 @@
 #import <UIKit/UIKit.h>
-#import <WebKit/WebKit.h>
 #include <string>
 #include <sstream>
 #include <algorithm>
 #include <cstdint>
-#include <cstring>  // std::memcpy用
+#include <cstring>  // std::memcpy
+#include <mach/mach.h>
+#include <mach/vm_region.h>
 
 #include "MemoryScanner.hpp"
 #include "SpeedHack.hpp"
-#include "inlined_html.hpp"
 
 // ============================================================
 // HELPER FUNCTIONS
@@ -28,13 +28,59 @@ static bool readMemorySafe(uintptr_t address, T& outValue) {
     return false;
 }
 
-// ============================================================
-// ALL @interface DECLARATIONS
-// ============================================================
+// Read a value at the given address based on the type and return
+// it as a NSString.  Used by MemorySearchView to display the
+// current value of each search result in the table cell.
+//   type = 0 → i32, 1 → i64, 2 → float, 3 → double
+// Returns "?" if the read fails (e.g. unmapped page).
+static NSString* readValueAsString(uintptr_t address, int type) {
+    kern_return_t kr;
+    vm_offset_t data;
+    mach_msg_type_number_t data_size;
+    switch (type) {
+        case 0: { // Type_i32
+            int32_t v;
+            data_size = 0;
+            kr = vm_read(mach_task_self(), address, 4, &data, &data_size);
+            if (kr != KERN_SUCCESS || data_size != 4) return @"?";
+            memcpy(&v, (void*)data, 4);
+            vm_deallocate(mach_task_self(), data, data_size);
+            return [NSString stringWithFormat:@"%d", v];
+        }
+        case 1: { // Type_i64
+            int64_t v;
+            data_size = 0;
+            kr = vm_read(mach_task_self(), address, 8, &data, &data_size);
+            if (kr != KERN_SUCCESS || data_size != 8) return @"?";
+            memcpy(&v, (void*)data, 8);
+            vm_deallocate(mach_task_self(), data, data_size);
+            return [NSString stringWithFormat:@"%lld", (long long)v];
+        }
+        case 2: { // Type_Float
+            float v;
+            data_size = 0;
+            kr = vm_read(mach_task_self(), address, 4, &data, &data_size);
+            if (kr != KERN_SUCCESS || data_size != 4) return @"?";
+            memcpy(&v, (void*)data, 4);
+            vm_deallocate(mach_task_self(), data, data_size);
+            return [NSString stringWithFormat:@"%f", v];
+        }
+        case 3: { // Type_Double
+            double v;
+            data_size = 0;
+            kr = vm_read(mach_task_self(), address, 8, &data, &data_size);
+            if (kr != KERN_SUCCESS || data_size != 8) return @"?";
+            memcpy(&v, (void*)data, 8);
+            vm_deallocate(mach_task_self(), data, data_size);
+            return [NSString stringWithFormat:@"%f", v];
+        }
+    }
+    return @"?";
+}
 
-@interface CheatEngineMessageHandler : NSObject <WKScriptMessageHandler>
-@property (nonatomic, weak) WKWebView *webView;
-@end
+// ============================================================
+// @interface DECLARATIONS
+// ============================================================
 
 @interface FloatingView : UIView
 @property (nonatomic, strong) UIButton *btnFloat;
@@ -56,11 +102,38 @@ static bool readMemorySafe(uintptr_t address, T& outValue) {
 @property (nonatomic, strong) FloatingView *floatingView;
 @end
 
-@interface OverlayWindow : UIWindow
-@property (nonatomic, strong) WKWebView *webView;
-@property (nonatomic, strong) CheatEngineMessageHandler *msgHandler;
+// Native UIKit replacement for the old WKWebView-based overlay.
+// Same shape and behaviour as DLGMemor's DLGMemUIView, but
+// split into two specialised panels: one for memory search,
+// one for point scan.  No HTML, no JS bridge, no Python —
+// just UITableView + UISegmentedControl + UITextField.
+@interface MemorySearchView : UIView <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, weak) UIWindow *host;
+@property (nonatomic, strong) UISegmentedControl *scType;
+@property (nonatomic, strong) UITextField *tfValue;
+@property (nonatomic, strong) UIButton *btnSearch;
+@property (nonatomic, strong) UILabel *lblResult;
+@property (nonatomic, strong) UITableView *tvResult;
+@property (nonatomic, strong) UIButton *btnReset;
+@property (nonatomic, strong) UIButton *btnRefresh;
+@property (nonatomic, strong) UIButton *btnClose;
+- (void)reload;
+@end
+
+@interface PointScanView : UIView <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, weak) UIWindow *host;
+@property (nonatomic, strong) UILabel *lblPinned;
+@property (nonatomic, strong) UITableView *tvPinned;
+@property (nonatomic, strong) UIButton *btnClose;
+@property (nonatomic, strong) dispatch_source_t refreshTimer;
+- (void)reload;
+@end
+
+@interface PanelWindow : UIWindow
+@property (nonatomic, strong) MemorySearchView *searchView;
+@property (nonatomic, strong) PointScanView *pointScanView;
+- (void)showFeature:(NSInteger)featureID;
 - (void)bgTapped:(UITapGestureRecognizer *)sender;
-- (void)applyCurrentFeature;
 @end
 
 // ============================================================
@@ -68,281 +141,17 @@ static bool readMemorySafe(uintptr_t address, T& outValue) {
 // ============================================================
 
 static FloatingWindow *gFloatingWindow = nil;
-static OverlayWindow *gOverlayWindow = nil;
-
-// Current feature requested by the user from the floating menu.
-// -1 = no feature chosen yet (just collapsed), 0 = memory search,
-// 1 = point scan.  Read by OverlayWindow.applyCurrentFeature to
-// tell the WKWebView which view to show via window.setFeature.
-static NSInteger gCurrentFeature = -1;
+static PanelWindow *gPanelWindow = nil;
 
 // ============================================================
-// IMPLEMENTATIONS
-// ============================================================
-
-@implementation CheatEngineMessageHandler
-
-- (void)userContentController:(WKUserContentController *)userContentController didReceiveScriptMessage:(WKScriptMessage *)message {
-    if (![message.name isEqualToString:@"cheatEngine"]) return;
-    
-    NSDictionary *dict = message.body;
-    if (![dict isKindOfClass:[NSDictionary class]]) return;
-    
-    @try {
-        NSString *action = dict[@"action"];
-        
-        if ([action isEqualToString:@"firstScan"]) {
-            NSString *typeStr = dict[@"type"];
-            NSString *valStr = dict[@"value"];
-            
-            ValueType type = ValueType::Type_i32;
-            if ([typeStr isEqualToString:@"i64"]) type = ValueType::Type_i64;
-            else if ([typeStr isEqualToString:@"float"]) type = ValueType::Type_Float;
-            else if ([typeStr isEqualToString:@"double"]) type = ValueType::Type_Double;
-            
-            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-                MemoryScanner::getInstance().firstScan(type, [valStr UTF8String]);
-                auto& results = MemoryScanner::getInstance().getResults();
-                size_t totalCount = results.size();
-                size_t displayCount = std::min(totalCount, (size_t)100);
-                
-                std::stringstream ss;
-                ss << "[";
-                for (size_t i = 0; i < displayCount; i++) {
-                    ss << "{\"address\":" << results[i].address << ",\"value\":\"";
-                    
-                    std::string currentVal = "";
-                    if (type == ValueType::Type_i32) {
-                        int32_t val;
-                        if (readMemorySafe(results[i].address, val)) currentVal = std::to_string(val);
-                    } else if (type == ValueType::Type_i64) {
-                        int64_t val;
-                        if (readMemorySafe(results[i].address, val)) currentVal = std::to_string(val);
-                    } else if (type == ValueType::Type_Float) {
-                        float val;
-                        if (readMemorySafe(results[i].address, val)) currentVal = std::to_string(val);
-                    } else if (type == ValueType::Type_Double) {
-                        double val;
-                        if (readMemorySafe(results[i].address, val)) currentVal = std::to_string(val);
-                    }
-                    ss << currentVal << "\"}";
-                    if (i < displayCount - 1) ss << ",";
-                }
-                ss << "]";
-                
-                std::string json = ss.str();
-                
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    NSString *js = [NSString stringWithFormat:@"window.updateResults('%s'); window.onScanComplete(%lu);", json.c_str(), totalCount];
-                    [self.webView evaluateJavaScript:js completionHandler:nil];
-                });
-            });
-        }
-        else if ([action isEqualToString:@"nextScan"]) {
-            NSString *valStr = dict[@"value"];
-            
-            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-                MemoryScanner::getInstance().nextScan([valStr UTF8String]);
-                auto& results = MemoryScanner::getInstance().getResults();
-                size_t totalCount = results.size();
-                size_t displayCount = std::min(totalCount, (size_t)100);
-                
-                std::stringstream ss;
-                ss << "[";
-                for (size_t i = 0; i < displayCount; i++) {
-                    ss << "{\"address\":" << results[i].address << ",\"value\":\"";
-                    
-                    std::string currentVal = "";
-                    ValueType type = results[i].type;
-                    if (type == ValueType::Type_i32) {
-                        int32_t val;
-                        if (readMemorySafe(results[i].address, val)) currentVal = std::to_string(val);
-                    } else if (type == ValueType::Type_i64) {
-                        int64_t val;
-                        if (readMemorySafe(results[i].address, val)) currentVal = std::to_string(val);
-                    } else if (type == ValueType::Type_Float) {
-                        float val;
-                        if (readMemorySafe(results[i].address, val)) currentVal = std::to_string(val);
-                    } else if (type == ValueType::Type_Double) {
-                        double val;
-                        if (readMemorySafe(results[i].address, val)) currentVal = std::to_string(val);
-                    }
-                    ss << currentVal << "\"}";
-                    if (i < displayCount - 1) ss << ",";
-                }
-                ss << "]";
-                
-                std::string json = ss.str();
-                
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    NSString *js = [NSString stringWithFormat:@"window.updateResults('%s'); window.onScanComplete(%lu);", json.c_str(), totalCount];
-                    [self.webView evaluateJavaScript:js completionHandler:nil];
-                });
-            });
-        }
-        else if ([action isEqualToString:@"modify"]) {
-            NSNumber *addrNum = dict[@"address"];
-            NSString *typeStr = dict[@"type"];
-            NSString *valStr = dict[@"value"];
-            uintptr_t address = [addrNum unsignedLongLongValue];
-            
-            ValueType type = ValueType::Type_i32;
-            if ([typeStr isEqualToString:@"i64"]) type = ValueType::Type_i64;
-            else if ([typeStr isEqualToString:@"float"]) type = ValueType::Type_Float;
-            else if ([typeStr isEqualToString:@"double"]) type = ValueType::Type_Double;
-            
-            MemoryScanner::getInstance().modifyValue(address, type, [valStr UTF8String]);
-        }
-        else if ([action isEqualToString:@"lock"]) {
-            NSNumber *addrNum = dict[@"address"];
-            NSString *typeStr = dict[@"type"];
-            NSString *valStr = dict[@"value"];
-            uintptr_t address = [addrNum unsignedLongLongValue];
-            
-            ValueType type = ValueType::Type_i32;
-            if ([typeStr isEqualToString:@"i64"]) type = ValueType::Type_i64;
-            else if ([typeStr isEqualToString:@"float"]) type = ValueType::Type_Float;
-            else if ([typeStr isEqualToString:@"double"]) type = ValueType::Type_Double;
-            
-            MemoryScanner::getInstance().lockValue(address, type, [valStr UTF8String]);
-        }
-        else if ([action isEqualToString:@"unlock"]) {
-            NSNumber *addrNum = dict[@"address"];
-            uintptr_t address = [addrNum unsignedLongLongValue];
-            MemoryScanner::getInstance().unlockValue(address);
-        }
-        // -------- Point-scan / pin --------
-        else if ([action isEqualToString:@"pin"]) {
-            NSNumber *addrNum = dict[@"address"];
-            NSString *typeStr = dict[@"type"];
-            uintptr_t address = [addrNum unsignedLongLongValue];
-            ValueType type = ValueType::Type_i32;
-            if ([typeStr isEqualToString:@"i64"]) type = ValueType::Type_i64;
-            else if ([typeStr isEqualToString:@"float"]) type = ValueType::Type_Float;
-            else if ([typeStr isEqualToString:@"double"]) type = ValueType::Type_Double;
-            MemoryScanner::getInstance().pinAddress(address, type);
-            // Send the updated pinned list back to the UI.
-            auto pinned = MemoryScanner::getInstance().copyPinnedAddresses();
-            std::stringstream ss;
-            ss << "[";
-            for (size_t i = 0; i < pinned.size(); ++i) {
-                if (i > 0) ss << ",";
-                ss << "{\"address\":" << pinned[i].address
-                   << ",\"type\":\"";
-                switch (pinned[i].type) {
-                    case ValueType::Type_i32: ss << "i32"; break;
-                    case ValueType::Type_i64: ss << "i64"; break;
-                    case ValueType::Type_Float: ss << "float"; break;
-                    case ValueType::Type_Double: ss << "double"; break;
-                }
-                ss << "\",\"value\":\"" << pinned[i].value << "\"}";
-            }
-            ss << "]";
-            std::string json = ss.str();
-            dispatch_async(dispatch_get_main_queue(), ^{
-                NSString *js = [NSString stringWithFormat:@"window.updatePinned('%s');", json.c_str()];
-                [self.webView evaluateJavaScript:js completionHandler:nil];
-            });
-        }
-        else if ([action isEqualToString:@"unpin"]) {
-            NSNumber *addrNum = dict[@"address"];
-            uintptr_t address = [addrNum unsignedLongLongValue];
-            MemoryScanner::getInstance().unpinAddress(address);
-        }
-        else if ([action isEqualToString:@"refreshPinned"]) {
-            // Re-read every pinned address from memory in-place
-            // then push the new values to the UI.
-            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-                MemoryScanner::getInstance().refreshPinned();
-                auto pinned = MemoryScanner::getInstance().copyPinnedAddresses();
-                std::stringstream ss;
-                ss << "[";
-                for (size_t i = 0; i < pinned.size(); ++i) {
-                    if (i > 0) ss << ",";
-                    ss << "{\"address\":" << pinned[i].address
-                       << ",\"type\":\"";
-                    switch (pinned[i].type) {
-                        case ValueType::Type_i32: ss << "i32"; break;
-                        case ValueType::Type_i64: ss << "i64"; break;
-                        case ValueType::Type_Float: ss << "float"; break;
-                        case ValueType::Type_Double: ss << "double"; break;
-                    }
-                    ss << "\",\"value\":\"" << pinned[i].value << "\"}";
-                }
-                ss << "]";
-                std::string json = ss.str();
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    NSString *js = [NSString stringWithFormat:@"window.updatePinned('%s');", json.c_str()];
-                    [self.webView evaluateJavaScript:js completionHandler:nil];
-                });
-            });
-        }
-        else if ([action isEqualToString:@"getPinned"]) {
-            // Synchronous snapshot of the pin list, no re-read.
-            auto pinned = MemoryScanner::getInstance().copyPinnedAddresses();
-            std::stringstream ss;
-            ss << "[";
-            for (size_t i = 0; i < pinned.size(); ++i) {
-                if (i > 0) ss << ",";
-                ss << "{\"address\":" << pinned[i].address
-                   << ",\"type\":\"";
-                switch (pinned[i].type) {
-                    case ValueType::Type_i32: ss << "i32"; break;
-                    case ValueType::Type_i64: ss << "i64"; break;
-                    case ValueType::Type_Float: ss << "float"; break;
-                    case ValueType::Type_Double: ss << "double"; break;
-                }
-                ss << "\",\"value\":\"" << pinned[i].value << "\"}";
-            }
-            ss << "]";
-            std::string json = ss.str();
-            NSString *js = [NSString stringWithFormat:@"window.updatePinned('%s');", json.c_str()];
-            [self.webView evaluateJavaScript:js completionHandler:nil];
-        }
-        else if ([action isEqualToString:@"setSpeed"]) {
-            NSNumber *speedNum = dict[@"speed"];
-            double speed = [speedNum doubleValue];
-            SpeedHack::getInstance().setSpeed(speed);
-        }
-        else if ([action isEqualToString:@"clear"]) {
-            MemoryScanner::getInstance().clear();
-        }
-        else if ([action isEqualToString:@"close"]) {
-            [[NSNotificationCenter defaultCenter] postNotificationName:@"CheatEngineCloseUI" object:nil];
-        }
-    } @catch (NSException *exception) {
-        NSLog(@"[Antigravity] Exception in message handling: %@", exception.reason);
-    }
-}
-
-@end
-
-// ============================================================
-// FloatingWindow
+// FloatingView (the little AG chip + 2-option menu)
 // ============================================================
 //
-// Visual / interaction model ported from DLGMemor's DLGMemUIView
-// (see DLGMemor/memui/views/DLGMemUIView.m).  DLGMemor is the
-// reference for drawing, menu display, and tap; we re-implement
-// the same patterns here without touching DLGMemor.
-//
-//   collapsed  → 50x50 black circle ("AG") with a cyan border.
-//                cornerRadius = width/2, alpha = 0.5, no shadow.
-//   expanded   → 200x180 black panel, cornerRadius = 18pt,
-//                alpha = 0.8, drop shadow (0.45 / 0,6 / 14pt).
-//                The "AG" chip grows to 60x60 at the top-left,
-//                and two option buttons fade in below it.
-//
-// Tapping the AG chip toggles expand/collapse (user preference).
-// Tapping an option opens the OverlayWindow with that feature.
-// Tapping the empty area of the panel also collapses — same as
-// DLGMemor's handleGesture: tap-anywhere-but-the-textfield-to-
-// collapse pattern, generalised to "anywhere-but-a-button".
-//
-// All animations use UIViewAnimationOptionBeginFromCurrentState
-// for smooth state-to-state transitions, 0.25s duration, and
-// animate the panel's frame, cornerRadius, alpha, and shadow
-// opacity in the same block (the same combo DLGMemor uses).
+// 2 states, like DLGMemUIView's rcCollapsedFrame/rcExpandedFrame:
+//   collapsed  → 50x50 black circle, alpha 0.5, no shadow
+//   expanded   → 200x180 black panel, cornerRadius 18, alpha 0.8,
+//                drop shadow (0.45 / 0,6 / 14), 2 option buttons
+//   transitions → 0.25s with UIViewAnimationOptionBeginFromCurrentState
 //
 static const CGFloat kCollapsedSize         = 50.0;
 static const CGFloat kExpandedCircleSize    = 60.0;
@@ -358,30 +167,6 @@ static const CGFloat kShadowOffsetY         = 6.0;
 static const CGFloat kShadowRadius          = 14.0;
 static const NSTimeInterval kAnimDuration   = 0.25;
 
-// ============================================================
-// FloatingView
-// ============================================================
-//
-// The actual floating UI, modelled directly on DLGMemor's
-// DLGMemUIView: a single UIView that owns ALL the drawing
-// (background, corner radius, drop shadow, alpha), all the
-// buttons, and all the gestures.  The view changes its own
-// frame for expand/collapse.
-//
-// Why a UIView and not a UIWindow:
-//   The previous attempt put the drawing on the FloatingWindow
-//   itself.  But iOS always draws the window's rootViewController
-//   view on top of the window's layer, and that view defaults to
-//   opaque, so the window's backgroundColor / cornerRadius /
-//   shadow were all hidden.  Putting the drawing on a subview
-//   fixes that — the view sits *inside* the (transparent)
-//   rootVC.view, so its background and shadow actually render.
-//
-//   The FloatingWindow is just a transparent container that
-//   hosts this view.  When the view's frame changes, the
-//   view's hostWindow property is updated so the window stays
-//   "just big enough" to contain the view (and its shadow).
-//
 @implementation FloatingView
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -390,20 +175,15 @@ static const NSTimeInterval kAnimDuration   = 0.25;
         // ----- Visual style (on the view, not the window) -----
         self.backgroundColor = [UIColor blackColor];
         self.opaque = YES;
-        // masksToBounds = NO so the drop shadow can extend
-        // outside the view's frame.  cornerRadius and
-        // shadowOpacity are animated in setExpanded:animated:.
         self.layer.masksToBounds = NO;
         self.layer.cornerRadius = kCollapsedSize / 2.0;
         self.layer.shadowColor   = [UIColor blackColor].CGColor;
-        self.layer.shadowOpacity = 0.0;             // no shadow when collapsed
+        self.layer.shadowOpacity = 0.0;
         self.layer.shadowOffset  = CGSizeMake(0, kShadowOffsetY);
         self.layer.shadowRadius  = kShadowRadius;
-        self.alpha = kCollapsedAlpha;               // 0.5 when collapsed
+        self.alpha = kCollapsedAlpha;
 
-        // Remember the small circle's frame on screen so the
-        // view can grow from this exact anchor when expanded.
-        self.collapsedFrame = CGRectMake(frame.origin.x, frame.origin.y, kCollapsedSize, kCollapsedSize);
+        self.collapsedFrame = CGRectMake(0, 0, kCollapsedSize, kCollapsedSize);
         self.expanded = NO;
 
         // ---- Main button (the AG circle) ----
@@ -423,26 +203,15 @@ static const NSTimeInterval kAnimDuration   = 0.25;
         [self addSubview:self.btnFloat];
 
         // ---- Pan gesture: on the view, not the button. ----
-        // This matches DLGMemor: the pan is on the DLGMemUIView
-        // itself, so the user can drag from anywhere on the
-        // panel — the circle, the menu, even the empty area
-        // around the buttons.  The previous version put the
-        // pan on the AG button, which meant dragging from
-        // outside the circle did nothing.
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
         [self addGestureRecognizer:pan];
 
-        // ---- Tap gesture: DLGMemor-style "tap empty area to
-        //      collapse".  Always active; the handler decides
-        //      what to do based on tap location + state. ----
+        // ---- Tap gesture: DLGMemor-style "tap empty area to collapse". ----
         UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleTap:)];
-        tap.cancelsTouchesInView = NO;   // let subview buttons still get touchUpInside
+        tap.cancelsTouchesInView = NO;
         [self addGestureRecognizer:tap];
 
-        // ---- Option buttons (system-button style: white text,
-        //      no background — just text on the view's black
-        //      background).  Hidden by default; shown + faded
-        //      in by setExpanded:. ----
+        // ---- Option buttons (system-button style: white text, no background) ----
         CGFloat optionY1 = kExpandedCircleSize + 10;
         CGFloat optionY2 = optionY1 + kOptionHeight + kOptionVerticalGap;
         UIFont  *optionFont = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
@@ -475,13 +244,6 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 }
 
 - (void)handlePan:(UIPanGestureRecognizer *)sender {
-    // Pan is on the view, so the user can drag from anywhere on
-    // the panel.  We MOVE THE WINDOW (not the view), because
-    // the view is at (0, 0) inside the rootVC.view, which
-    // fills the window.  Moving self.center would just slide
-    // the view *inside* the window's content rect — invisible
-    // to the user.  Moving the window's frame moves the view
-    // on screen.
     CGPoint translation = [sender translationInView:self];
 
     NSLog(@"[FloatingView] handlePan state=%d t=(%.1f,%.1f) hostWin=%@ winFrame=%@",
@@ -492,10 +254,6 @@ static const NSTimeInterval kAnimDuration   = 0.25;
     wf.origin.x += translation.x;
     wf.origin.y += translation.y;
 
-    // Clamp to screen bounds (don't let the panel go off-screen)
-    // but DO NOT snap to the nearest edge.  The user dragged it
-    // somewhere specific, so on release the panel stays exactly
-    // where they put it.
     CGRect screenBounds = [UIScreen mainScreen].bounds;
     wf.origin.x = MAX(0, MIN(screenBounds.size.width  - wf.size.width,  wf.origin.x));
     wf.origin.y = MAX(0, MIN(screenBounds.size.height - wf.size.height, wf.origin.y));
@@ -503,28 +261,19 @@ static const NSTimeInterval kAnimDuration   = 0.25;
     self.hostWindow.frame = wf;
     [sender setTranslation:CGPointZero inView:self];
 
-    // collapsedFrame is the view's SCREEN position (the view
-    // is at (0, 0) in the window, so its screen top-left is
-    // the window's top-left).  Mirror the window's frame here
-    // so the expand animation always grows from the spot the
-    // user last dropped the panel.
     self.collapsedFrame = wf;
 
     NSLog(@"[FloatingView] handlePan DONE new winFrame=%@", NSStringFromCGRect(wf));
 }
 
-// DLGMemor-style "tap empty area to collapse".  Same logic as
-// DLGMemUIView.handleGesture:, just adapted to a button-based
-// menu (the AG button + 2 option buttons) instead of a
-// text-field menu.
 - (void)handleTap:(UITapGestureRecognizer *)sender {
     if (sender.state != UIGestureRecognizerStateEnded) return;
 
     CGPoint pt = [sender locationInView:self];
 
-    if (CGRectContainsPoint(self.btnFloat.frame, pt))        return;  // btnTapped
-    if (CGRectContainsPoint(self.btnMemorySearch.frame, pt)) return;  // optionMemorySearchTapped
-    if (CGRectContainsPoint(self.btnPointScan.frame, pt))   return;  // optionPointScanTapped
+    if (CGRectContainsPoint(self.btnFloat.frame, pt))        return;
+    if (CGRectContainsPoint(self.btnMemorySearch.frame, pt)) return;
+    if (CGRectContainsPoint(self.btnPointScan.frame, pt))   return;
 
     if (self.expanded) {
         [self setExpanded:NO animated:YES];
@@ -533,7 +282,6 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 
 - (void)btnTapped {
     NSLog(@"[FloatingView] btnTapped expanded=%d", self.expanded);
-    // Tap on the AG circle in either state toggles expand/collapse.
     if (self.expanded) {
         [self setExpanded:NO animated:YES];
     } else {
@@ -545,15 +293,6 @@ static const NSTimeInterval kAnimDuration   = 0.25;
     if (_expanded == expanded) return;
     _expanded = expanded;
 
-    // The view's frame is ALWAYS (0, 0, w, h) in the
-    // rootVC.view's coord system.  The host WINDOW's origin
-    // is what places the view on screen.  Previous bug: we
-    // built targetFrame from collapsedFrame.origin (which
-    // is a screen position), then assigned it to self.frame
-    // — so the view was at (windowScreenX, windowScreenY)
-    // inside the 50x50 rootVC.view, i.e. mostly off-screen
-    // inside the rootVC.view's clip area, and the panel
-    // 'flew to the bottom-right' on every expand.
     CGRect targetViewFrame;
     if (expanded) {
         targetViewFrame = CGRectMake(0, 0, kExpandedWidth, kExpandedHeight);
@@ -564,30 +303,16 @@ static const NSTimeInterval kAnimDuration   = 0.25;
     CGRect smallCircle = CGRectMake(0, 0, kCollapsedSize, kCollapsedSize);
 
     if (expanded) {
-        // Make the option buttons visible immediately so they
-        // can be hit-tested while the animation runs.
         self.btnMemorySearch.hidden = NO;
         self.btnPointScan.hidden   = NO;
 
-        // Build the new window frame: keep the origin from
-        // collapsedFrame (the spot the user dropped the
-        // panel) but clamp it so the expanded window fits
-        // entirely within the screen.  This prevents the
-        // 'expanded panel off-screen, can't tap the AG circle
-        // to collapse' failure mode.
         CGRect newWf;
         newWf.size   = targetViewFrame.size;
         newWf.origin = self.collapsedFrame.origin;
         CGRect screenBounds = [UIScreen mainScreen].bounds;
         newWf.origin.x = MAX(0, MIN(screenBounds.size.width  - newWf.size.width,  newWf.origin.x));
         newWf.origin.y = MAX(0, MIN(screenBounds.size.height - newWf.size.height, newWf.origin.y));
-        // Mirror the clamped origin back into collapsedFrame
-        // so a subsequent collapse animation lands at the
-        // clamped position.
         self.collapsedFrame.origin = newWf.origin;
-
-        NSLog(@"[FloatingView] setExpanded:YES newWf=%@ screen=%@",
-              NSStringFromCGRect(newWf), NSStringFromCGRect(screenBounds));
 
         void (^expandAnim)(void) = ^{
             self.frame = targetViewFrame;
@@ -603,7 +328,6 @@ static const NSTimeInterval kAnimDuration   = 0.25;
             }
         };
         void (^expandDone)(BOOL) = ^(BOOL finished) {
-            // Final-state pin (DLGMemor does the same).
             self.frame = targetViewFrame;
             self.alpha = kExpandedAlpha;
             self.layer.cornerRadius  = kExpandedCornerRadius;
@@ -624,15 +348,9 @@ static const NSTimeInterval kAnimDuration   = 0.25;
             expandDone(YES);
         }
     } else {
-        // Collapse: shrink the window back to 50x50, keep
-        // the origin at collapsedFrame.origin (which was
-        // updated to the clamped position during the last
-        // expand).
         CGRect newWf;
         newWf.size   = targetViewFrame.size;
         newWf.origin = self.collapsedFrame.origin;
-
-        NSLog(@"[FloatingView] setExpanded:NO newWf=%@", NSStringFromCGRect(newWf));
 
         void (^collapseAnim)(void) = ^{
             self.alpha = kCollapsedAlpha;
@@ -680,33 +398,20 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 }
 
 - (void)openFeature:(NSInteger)featureID {
-    gCurrentFeature = featureID;
-
-    // Collapse the menu (animated) so the user gets visual
-    // feedback that their tap registered, then hand off to the
-    // overlay after the collapse animation finishes.
+    // Collapse the menu, then hand off to the panel.
     [self setExpanded:NO animated:YES];
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kAnimDuration * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if (self.hostWindow != nil) self.hostWindow.hidden = YES;
-        gOverlayWindow.hidden = NO;
-        [gOverlayWindow applyCurrentFeature];
+        if (gPanelWindow != nil) {
+            [gPanelWindow showFeature:featureID];
+        }
     });
 }
 
 @end
 
-// ============================================================
-// FloatingWindow
-// ============================================================
-//
-// Transparent container.  All the drawing / gestures / expand
-// logic lives on the FloatingView hosted inside this window.
-// We just need: a windowLevel, a transparent background, a
-// transparent rootViewController (required on iOS 15+), and
-// the FloatingView itself as a subview of the rootVC's view.
-//
 @implementation FloatingWindow
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -716,107 +421,375 @@ static const NSTimeInterval kAnimDuration   = 0.25;
         self.backgroundColor = [UIColor clearColor];
         self.userInteractionEnabled = YES;
 
-        // iOS 15+/26 requires every UIWindow to have a
-        // rootViewController.  Make its view fully transparent
-        // (opaque = NO) so the FloatingView underneath shows
-        // through cleanly.
         UIViewController *rootVC = [[UIViewController alloc] init];
         rootVC.view.opaque = NO;
         rootVC.view.backgroundColor = [UIColor clearColor];
         rootVC.view.userInteractionEnabled = YES;
         self.rootViewController = rootVC;
 
-        // The actual UI: a FloatingView that owns all the
-        // drawing, gestures, and expand/collapse animation.
-        // The view's frame is in the rootVC.view's coord
-        // system (which fills the window), so it starts at
-        // (0, 0, w, h) — fully covering the window's content.
-        // Passing `frame` (which is in screen coords) would
-        // put the view off-screen inside the rootVC.view.
         self.floatingView = [[FloatingView alloc] initWithFrame:
             CGRectMake(0, 0, frame.size.width, frame.size.height)];
         self.floatingView.hostWindow = self;
         [rootVC.view addSubview:self.floatingView];
-        NSLog(@"[FloatingWindow] init frame=%@ floatingView=%@ hostWinBackRef=%@",
-              NSStringFromCGRect(frame), self.floatingView, self.floatingView.hostWindow);
     }
     return self;
 }
 
 @end
 
-@implementation OverlayWindow
+// ============================================================
+// MemorySearchView
+// ============================================================
+//
+// Native UIKit panel for memory search.  Same role as
+// DLGMemUIView's search pane — UITextField for the value,
+// UISegmentedControl for the type, UITableView for the
+// results, action buttons along the bottom.
+//
+// No HTML, no JS bridge, no Python: results come straight from
+// MemoryScanner::getInstance().getResults() and the value for
+// each cell is read at display time via readValueAsString().
+//
+@implementation MemorySearchView
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        // Visual style — match DLGMemUIView's expanded panel.
+        self.backgroundColor = [UIColor blackColor];
+        self.opaque = YES;
+        self.layer.cornerRadius = 18.0;
+        self.layer.masksToBounds = NO;
+        self.layer.shadowColor   = [UIColor blackColor].CGColor;
+        self.layer.shadowOpacity = 0.45;
+        self.layer.shadowOffset  = CGSizeMake(0, 6);
+        self.layer.shadowRadius  = 14.0;
+        self.alpha = 0.95;
+
+        // ---- Type selector (i32 / i64 / float / double) ----
+        self.scType = [[UISegmentedControl alloc] initWithItems:@[@"i32", @"i64", @"f32", @"f64"]];
+        self.scType.selectedSegmentIndex = 0;
+        self.scType.frame = CGRectMake(20, 20, 370, 32);
+        [self addSubview:self.scType];
+
+        // ---- Value input + Search button ----
+        self.tfValue = [[UITextField alloc] initWithFrame:CGRectMake(20, 60, 270, 36)];
+        self.tfValue.borderStyle = UITextBorderStyleRoundedRect;
+        self.tfValue.backgroundColor = [UIColor whiteColor];
+        self.tfValue.textColor = [UIColor blackColor];
+        self.tfValue.placeholder = @"値を入力 (例: 100)";
+        self.tfValue.keyboardType = UIKeyboardTypeDefault;
+        self.tfValue.spellCheckingType = UITextSpellCheckingTypeNo;
+        self.tfValue.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        self.tfValue.autocorrectionType = UITextAutocorrectionTypeNo;
+        [self addSubview:self.tfValue];
+
+        self.btnSearch = [UIButton buttonWithType:UIButtonTypeSystem];
+        self.btnSearch.frame = CGRectMake(298, 60, 92, 36);
+        [self.btnSearch setTitle:@"検索" forState:UIControlStateNormal];
+        [self.btnSearch addTarget:self action:@selector(onSearchTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:self.btnSearch];
+
+        // ---- Result label ----
+        self.lblResult = [[UILabel alloc] initWithFrame:CGRectMake(20, 104, 370, 20)];
+        self.lblResult.textColor = [UIColor whiteColor];
+        self.lblResult.text = @"Found 0";
+        [self addSubview:self.lblResult];
+
+        // ---- Result table ----
+        self.tvResult = [[UITableView alloc] initWithFrame:CGRectMake(20, 132, 370, 380) style:UITableViewStylePlain];
+        self.tvResult.dataSource = self;
+        self.tvResult.delegate = self;
+        self.tvResult.backgroundColor = [UIColor clearColor];
+        self.tvResult.separatorStyle = UITableViewCellSeparatorStyleNone;
+        self.tvResult.indicatorStyle = UIScrollViewIndicatorStyleWhite;
+        [self.tvResult registerClass:[UITableViewCell class] forCellReuseIdentifier:@"searchCell"];
+        [self addSubview:self.tvResult];
+
+        // ---- Action buttons (Reset / Refresh / Close) ----
+        self.btnReset = [UIButton buttonWithType:UIButtonTypeSystem];
+        self.btnReset.frame = CGRectMake(20, 520, 100, 36);
+        [self.btnReset setTitle:@"リセット" forState:UIControlStateNormal];
+        [self.btnReset addTarget:self action:@selector(onResetTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:self.btnReset];
+
+        self.btnRefresh = [UIButton buttonWithType:UIButtonTypeSystem];
+        self.btnRefresh.frame = CGRectMake(140, 520, 100, 36);
+        [self.btnRefresh setTitle:@"更新" forState:UIControlStateNormal];
+        [self.btnRefresh addTarget:self action:@selector(onRefreshTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:self.btnRefresh];
+
+        self.btnClose = [UIButton buttonWithType:UIButtonTypeSystem];
+        self.btnClose.frame = CGRectMake(260, 520, 100, 36);
+        [self.btnClose setTitle:@"閉じる" forState:UIControlStateNormal];
+        [self.btnClose addTarget:self action:@selector(onCloseTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:self.btnClose];
+    }
+    return self;
+}
+
+- (void)reload {
+    auto& results = MemoryScanner::getInstance().getResults();
+    self.lblResult.text = [NSString stringWithFormat:@"Found %lu", (unsigned long)results.size()];
+    [self.tvResult reloadData];
+}
+
+- (void)onSearchTapped {
+    NSString *valueStr = self.tfValue.text;
+    if (valueStr.length == 0) return;
+    int type = (int)self.scType.selectedSegmentIndex;
+    MemoryScanner::getInstance().firstScan((ValueType)type, [valueStr UTF8String]);
+    [self reload];
+}
+
+- (void)onResetTapped {
+    MemoryScanner::getInstance().clear();
+    [self reload];
+}
+
+- (void)onRefreshTapped {
+    [self.tvResult reloadData];
+}
+
+- (void)onCloseTapped {
+    if (self.host != nil) self.host.hidden = YES;
+    if (gFloatingWindow != nil) gFloatingWindow.hidden = NO;
+}
+
+#pragma mark - UITableViewDataSource
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return MemoryScanner::getInstance().getResults().size();
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"searchCell" forIndexPath:indexPath];
+    cell.backgroundColor = [UIColor clearColor];
+    cell.contentView.backgroundColor = [UIColor clearColor];
+    cell.textLabel.textColor = [UIColor whiteColor];
+    cell.textLabel.font = [UIFont fontWithName:@"Menlo-Regular" size:13] ?: [UIFont systemFontOfSize:13];
+    cell.detailTextLabel.textColor = [UIColor colorWithRed:0.0 green:0.94 blue:1.0 alpha:1.0];
+    cell.detailTextLabel.font = [UIFont systemFontOfSize:11];
+
+    auto& results = MemoryScanner::getInstance().getResults();
+    if ((NSUInteger)indexPath.row >= results.size()) return cell;
+    auto& r = results[indexPath.row];
+    NSString *addr = [NSString stringWithFormat:@"0x%llX", (unsigned long long)r.address];
+    NSString *val  = readValueAsString(r.address, (int)r.type);
+    cell.textLabel.text       = [NSString stringWithFormat:@"%@  =  %@", addr, val];
+    cell.accessoryType        = UITableViewCellAccessoryDetailDisclosureButton;
+    cell.accessoryView        = nil;
+    return cell;
+}
+
+- (BOOL)tableView:(UITableView *)tableView shouldHighlightRowAtIndexPath:(NSIndexPath *)indexPath {
+    return YES;
+}
+
+#pragma mark - UITableViewDelegate
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    // Tap a row to pin it.
+    auto& results = MemoryScanner::getInstance().getResults();
+    if ((NSUInteger)indexPath.row >= results.size()) return;
+    auto& r = results[indexPath.row];
+    MemoryScanner::getInstance().pinAddress(r.address, (ValueType)r.type);
+}
+
+@end
+
+// ============================================================
+// PointScanView
+// ============================================================
+//
+// Native UIKit panel for the point scan.  Lists every pinned
+// address with its current value, refreshed at 1Hz by a
+// background dispatch_source_t.  Tap a row to unpin.
+//
+@implementation PointScanView
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.backgroundColor = [UIColor blackColor];
+        self.opaque = YES;
+        self.layer.cornerRadius = 18.0;
+        self.layer.masksToBounds = NO;
+        self.layer.shadowColor   = [UIColor blackColor].CGColor;
+        self.layer.shadowOpacity = 0.45;
+        self.layer.shadowOffset  = CGSizeMake(0, 6);
+        self.layer.shadowRadius  = 14.0;
+        self.alpha = 0.95;
+
+        // Pinned count label
+        self.lblPinned = [[UILabel alloc] initWithFrame:CGRectMake(20, 20, 310, 20)];
+        self.lblPinned.textColor = [UIColor whiteColor];
+        self.lblPinned.text = @"Pinned 0";
+        [self addSubview:self.lblPinned];
+
+        // Pinned table
+        self.tvPinned = [[UITableView alloc] initWithFrame:CGRectMake(20, 48, 310, 380) style:UITableViewStylePlain];
+        self.tvPinned.dataSource = self;
+        self.tvPinned.delegate = self;
+        self.tvPinned.backgroundColor = [UIColor clearColor];
+        self.tvPinned.separatorStyle = UITableViewCellSeparatorStyleNone;
+        self.tvPinned.indicatorStyle = UIScrollViewIndicatorStyleWhite;
+        [self.tvPinned registerClass:[UITableViewCell class] forCellReuseIdentifier:@"pinnedCell"];
+        [self addSubview:self.tvPinned];
+
+        // Close button
+        self.btnClose = [UIButton buttonWithType:UIButtonTypeSystem];
+        self.btnClose.frame = CGRectMake(115, 440, 120, 36);
+        [self.btnClose setTitle:@"閉じる" forState:UIControlStateNormal];
+        [self.btnClose addTarget:self action:@selector(onCloseTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:self.btnClose];
+
+        // 1Hz refresh timer: re-read every pinned address on a
+        // background queue, then reload the table on main.
+        self.refreshTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                                    dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0));
+        dispatch_source_set_timer(self.refreshTimer,
+                                  dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                                  (uint64_t)(1.0 * NSEC_PER_SEC),
+                                  (uint64_t)(0.1 * NSEC_PER_SEC));
+        __weak typeof(self) weakSelf = self;
+        dispatch_source_set_event_handler(self.refreshTimer, ^{
+            MemoryScanner::getInstance().refreshPinned();
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf reload];
+            });
+        });
+        dispatch_resume(self.refreshTimer);
+    }
+    return self;
+}
+
+- (void)dealloc {
+    if (self.refreshTimer != nil) {
+        dispatch_source_cancel(self.refreshTimer);
+    }
+}
+
+- (void)reload {
+    auto pinned = MemoryScanner::getInstance().copyPinnedAddresses();
+    self.lblPinned.text = [NSString stringWithFormat:@"Pinned %lu", (unsigned long)pinned.size()];
+    [self.tvPinned reloadData];
+}
+
+- (void)onCloseTapped {
+    if (self.host != nil) self.host.hidden = YES;
+    if (gFloatingWindow != nil) gFloatingWindow.hidden = NO;
+}
+
+#pragma mark - UITableViewDataSource
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return MemoryScanner::getInstance().copyPinnedAddresses().size();
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"pinnedCell" forIndexPath:indexPath];
+    cell.backgroundColor = [UIColor clearColor];
+    cell.contentView.backgroundColor = [UIColor clearColor];
+    cell.textLabel.textColor = [UIColor whiteColor];
+    cell.textLabel.font = [UIFont fontWithName:@"Menlo-Regular" size:13] ?: [UIFont systemFontOfSize:13];
+
+    auto pinned = MemoryScanner::getInstance().copyPinnedAddresses();
+    if ((NSUInteger)indexPath.row >= pinned.size()) return cell;
+    auto& p = pinned[indexPath.row];
+    NSString *addr = [NSString stringWithFormat:@"0x%llX", (unsigned long long)p.address];
+    NSString *val  = [NSString stringWithUTF8String:p.value.c_str()];
+    cell.textLabel.text = [NSString stringWithFormat:@"%@  =  %@", addr, val];
+    return cell;
+}
+
+#pragma mark - UITableViewDelegate
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    // Tap a row to unpin.
+    auto pinned = MemoryScanner::getInstance().copyPinnedAddresses();
+    if ((NSUInteger)indexPath.row >= pinned.size()) return;
+    auto& p = pinned[indexPath.row];
+    MemoryScanner::getInstance().unpinAddress(p.address);
+    [self reload];
+}
+
+@end
+
+// ============================================================
+// PanelWindow
+// ============================================================
+//
+// Transparent container that hosts MemorySearchView and
+// PointScanView as subviews of the rootViewController's view.
+// Only one view is visible at a time (toggled by showFeature:).
+// A tap on the empty area (outside the visible panel) closes
+// the window and re-shows the floating AG chip — same UX as
+// the old WKWebView's bgTapped: behaviour.
+//
+@implementation PanelWindow
 
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
         self.windowLevel = UIWindowLevelAlert + 99;
         self.backgroundColor = [UIColor clearColor];
-        
-        // iOS 15+ 対応: rootViewController を設定
+        self.userInteractionEnabled = YES;
+
         UIViewController *rootVC = [[UIViewController alloc] init];
+        rootVC.view.opaque = NO;
         rootVC.view.backgroundColor = [UIColor clearColor];
+        rootVC.view.userInteractionEnabled = YES;
         self.rootViewController = rootVC;
-        
-        WKWebViewConfiguration *config = [[WKWebViewConfiguration alloc] init];
-        self.msgHandler = [[CheatEngineMessageHandler alloc] init];
-        [config.userContentController addScriptMessageHandler:self.msgHandler name:@"cheatEngine"];
-        
-        CGSize screenSize = [UIScreen mainScreen].bounds.size;
-        CGFloat width = MIN(screenSize.width - 40, 760.0);
-        CGFloat height = MIN(screenSize.height - 40, 480.0);
-        CGRect webFrame = CGRectMake((screenSize.width - width) / 2.0, (screenSize.height - height) / 2.0, width, height);
-        
-        self.webView = [[WKWebView alloc] initWithFrame:webFrame configuration:config];
-        self.webView.backgroundColor = [UIColor clearColor];
-        self.webView.scrollView.backgroundColor = [UIColor clearColor];
-        self.webView.opaque = NO;
-        self.webView.layer.cornerRadius = 18.0;
-        self.webView.clipsToBounds = YES;
-        self.webView.scrollView.bounces = NO;
-        
-        self.msgHandler.webView = self.webView;
-        
-        NSString *htmlStr = [NSString stringWithUTF8String:CHEAT_UI_HTML];
-        [self.webView loadHTMLString:htmlStr baseURL:nil];
-        
-        [self addSubview:self.webView];
-        
+
+        // MemorySearchView — 410x560 centered
+        CGRect searchFrame = CGRectMake((frame.size.width  - 410) / 2.0,
+                                        (frame.size.height - 560) / 2.0,
+                                        410, 560);
+        self.searchView = [[MemorySearchView alloc] initWithFrame:searchFrame];
+        self.searchView.host = self;
+        self.searchView.hidden = YES;
+        [rootVC.view addSubview:self.searchView];
+
+        // PointScanView — 350x480 centered
+        CGRect pointFrame  = CGRectMake((frame.size.width  - 350) / 2.0,
+                                        (frame.size.height - 480) / 2.0,
+                                        350, 480);
+        self.pointScanView = [[PointScanView alloc] initWithFrame:pointFrame];
+        self.pointScanView.host = self;
+        self.pointScanView.hidden = YES;
+        [rootVC.view addSubview:self.pointScanView];
+
+        // Tap outside the visible panel to close.
         UITapGestureRecognizer *bgTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(bgTapped:)];
         bgTap.cancelsTouchesInView = NO;
-        [self addGestureRecognizer:bgTap];
+        [rootVC.view addGestureRecognizer:bgTap];
     }
     return self;
 }
 
-- (void)bgTapped:(UITapGestureRecognizer *)sender {
-    CGPoint point = [sender locationInView:self.webView];
-    if (!CGRectContainsPoint(self.webView.bounds, point)) {
-        self.hidden = YES;
-        gFloatingWindow.hidden = NO;
-        gCurrentFeature = -1;  // reset; next expand starts fresh
-        // Re-expand the floating menu so the user can quickly
-        // switch to a different feature without an extra tap.
-        [gFloatingWindow.floatingView setExpanded:YES animated:YES];
-    }
+- (void)showFeature:(NSInteger)featureID {
+    self.searchView.hidden    = (featureID != 0);
+    self.pointScanView.hidden = (featureID != 1);
+    [self.searchView reload];
+    [self.pointScanView reload];
+    self.hidden = NO;
 }
 
-// Pushes the current feature (gCurrentFeature) into the WKWebView
-// by calling window.setFeature('search' | 'points').  The HTML
-// side is expected to define window.setFeature to switch the
-// visible view.  Safe to call when the JS function isn't defined
-// yet — we just no-op in that case.
-- (void)applyCurrentFeature {
-    NSString *feature = nil;
-    switch (gCurrentFeature) {
-        case 0:  feature = @"search"; break;
-        case 1:  feature = @"points"; break;
-        default: feature = nil;       break;
+- (void)bgTapped:(UITapGestureRecognizer *)sender {
+    if (sender.state != UIGestureRecognizerStateEnded) return;
+    UIView *root = self.rootViewController.view;
+    CGPoint pt = [sender locationInView:root];
+    // If the tap landed on the visible panel, let the panel's
+    // own controls handle it.  Otherwise, close the panel and
+    // re-show the floating chip (also re-expand its menu so
+    // the user can quickly switch features).
+    if (!self.searchView.hidden    && CGRectContainsPoint(self.searchView.frame,    pt)) return;
+    if (!self.pointScanView.hidden && CGRectContainsPoint(self.pointScanView.frame, pt)) return;
+
+    self.hidden = YES;
+    if (gFloatingWindow != nil) {
+        gFloatingWindow.hidden = NO;
+        [gFloatingWindow.floatingView setExpanded:YES animated:YES];
     }
-    if (feature == nil) return;
-    NSString *js = [NSString stringWithFormat:
-        @"try { if (window.setFeature) { window.setFeature('%@'); } } catch (e) {}", feature];
-    [self.webView evaluateJavaScript:js completionHandler:nil];
 }
 
 @end
@@ -828,83 +801,47 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 __attribute__((constructor))
 static void initializeCheatEngine() {
     NSLog(@"[Antigravity] Dylib loaded into target process!");
-    
+
     SpeedHack::getInstance().start();
 
-    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0));
-    dispatch_source_set_timer(timer, DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC, 5 * NSEC_PER_MSEC);
-    dispatch_source_set_event_handler(timer, ^{
+    // Locked-value timer: re-write any locked addresses every
+    // 50ms so a frozen game value stays at the user's target.
+    dispatch_source_t lockTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                                          dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0));
+    dispatch_source_set_timer(lockTimer,
+                              DISPATCH_TIME_NOW,
+                              50 * NSEC_PER_MSEC,
+                              5 * NSEC_PER_MSEC);
+    dispatch_source_set_event_handler(lockTimer, ^{
         MemoryScanner::getInstance().updateLockedValues();
     });
-    dispatch_resume(timer);
+    dispatch_resume(lockTimer);
 
-    // Point-scan refresh timer: every 1.0s, re-read every pinned
-    // address and push the new values to the WKWebView.  Only
-    // touches the UI if the user has at least one pinned address,
-    // so when there are no pins it's a no-op cost-wise.
-    dispatch_source_t pinnedTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0));
-    dispatch_source_set_timer(pinnedTimer,
-                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                              (uint64_t)(1.0 * NSEC_PER_SEC),
-                              (uint64_t)(0.1 * NSEC_PER_SEC));
-    dispatch_source_set_event_handler(pinnedTimer, ^{
-        auto pinned = MemoryScanner::getInstance().copyPinnedAddresses();
-        if (pinned.empty()) return;  // no pins, skip everything
-        MemoryScanner::getInstance().refreshPinned();
-        // Re-build the JSON after the refresh and push to the UI.
-        std::stringstream ss;
-        ss << "[";
-        for (size_t i = 0; i < pinned.size(); ++i) {
-            if (i > 0) ss << ",";
-            ss << "{\"address\":" << pinned[i].address
-               << ",\"type\":\"";
-            switch (pinned[i].type) {
-                case ValueType::Type_i32: ss << "i32"; break;
-                case ValueType::Type_i64: ss << "i64"; break;
-                case ValueType::Type_Float: ss << "float"; break;
-                case ValueType::Type_Double: ss << "double"; break;
-            }
-            ss << "\",\"value\":\"" << pinned[i].value << "\"}";
-        }
-        ss << "]";
-        std::string json = ss.str();
-        dispatch_async(dispatch_get_main_queue(), ^{
-            UIWindow *kw = nil;
-            if (@available(iOS 13.0, *)) {
-                for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
-                    if (s.activationState == UISceneActivationStateForegroundActive &&
-                        [s isKindOfClass:[UIWindowScene class]]) {
-                        for (UIWindow *w in ((UIWindowScene *)s).windows) {
-                            if ([w isKindOfClass:[NSClassFromString(@"OverlayWindow") class]]) { kw = w; break; }
-                        }
-                    }
-                    if (kw != nil) break;
-                }
-            }
-            WKWebView *web = [kw valueForKey:@"webView"];
-            if (web != nil) {
-                NSString *js = [NSString stringWithFormat:@"window.updatePinned('%s');", json.c_str()];
-                [web evaluateJavaScript:js completionHandler:nil];
-            }
-        });
-    });
-    dispatch_resume(pinnedTimer);
-    
-    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification * _Nonnull note) {
-        
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification * _Nonnull note) {
+
         CGRect screenBounds = [UIScreen mainScreen].bounds;
-        
-        gFloatingWindow = [[FloatingWindow alloc] initWithFrame:CGRectMake(20, screenBounds.size.height / 3.0, 50, 50)];
+
+        // Floating AG chip + 2-option menu.
+        gFloatingWindow = [[FloatingWindow alloc] initWithFrame:CGRectMake(20,
+                                                                            screenBounds.size.height / 3.0,
+                                                                            50, 50)];
         gFloatingWindow.hidden = NO;
-        
-        gOverlayWindow = [[OverlayWindow alloc] initWithFrame:screenBounds];
-        gOverlayWindow.hidden = YES;
-        
-        NSLog(@"[Antigravity] Cheat Engine Overlay UI initialized.");
+
+        // Native UIKit panel window (memory search + point scan).
+        gPanelWindow = [[PanelWindow alloc] initWithFrame:screenBounds];
+        gPanelWindow.hidden = YES;
+
+        NSLog(@"[Antigravity] UI initialized (native UIKit, no HTML/JS bridge).");
     }];
-    
-    [[NSNotificationCenter defaultCenter] addObserverForName:@"CheatEngineCloseUI" object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification * _Nonnull note) {
-        gOverlayWindow.hidden = YES;
-        gFloatingWindow.hidden = NO;
+
+    [[NSNotificationCenter defaultCenter] addObserverForName:@"CheatEngineCloseUI"
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification * _Nonnull note) {
+        if (gPanelWindow != nil) gPanelWindow.hidden = YES;
+        if (gFloatingWindow != nil) gFloatingWindow.hidden = NO;
     }];
 }
