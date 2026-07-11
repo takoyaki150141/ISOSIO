@@ -476,36 +476,41 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 
 - (void)handlePan:(UIPanGestureRecognizer *)sender {
     // Pan is on the view, so the user can drag from anywhere on
-    // the panel.  We move self.center in the superview's coord
-    // system; the translation from the gesture is in self's
-    // coord system, which equals the superview's because the
-    // view doesn't rotate or scale.
+    // the panel.  We MOVE THE WINDOW (not the view), because
+    // the view is at (0, 0) inside the rootVC.view, which
+    // fills the window.  Moving self.center would just slide
+    // the view *inside* the window's content rect — invisible
+    // to the user.  Moving the window's frame moves the view
+    // on screen.
     CGPoint translation = [sender translationInView:self];
-    CGPoint newCenter = CGPointMake(self.center.x + translation.x, self.center.y + translation.y);
 
-    // Clamp to screen bounds (don't let the view go off-screen)
+    NSLog(@"[FloatingView] handlePan state=%d t=(%.1f,%.1f) hostWin=%@ winFrame=%@",
+          (int)sender.state, translation.x, translation.y,
+          self.hostWindow, NSStringFromCGRect(self.hostWindow.frame));
+
+    CGRect wf = self.hostWindow.frame;
+    wf.origin.x += translation.x;
+    wf.origin.y += translation.y;
+
+    // Clamp to screen bounds (don't let the panel go off-screen)
     // but DO NOT snap to the nearest edge.  The user dragged it
-    // somewhere specific, so on release the view stays exactly
+    // somewhere specific, so on release the panel stays exactly
     // where they put it.
     CGRect screenBounds = [UIScreen mainScreen].bounds;
-    newCenter.x = MAX(self.frame.size.width / 2, MIN(screenBounds.size.width - self.frame.size.width / 2, newCenter.x));
-    newCenter.y = MAX(self.frame.size.height / 2, MIN(screenBounds.size.height - self.frame.size.height / 2, newCenter.y));
+    wf.origin.x = MAX(0, MIN(screenBounds.size.width  - wf.size.width,  wf.origin.x));
+    wf.origin.y = MAX(0, MIN(screenBounds.size.height - wf.size.height, wf.origin.y));
 
-    self.center = newCenter;
+    self.hostWindow.frame = wf;
     [sender setTranslation:CGPointZero inView:self];
 
-    // Keep the collapsed-anchor's origin synced with the view's
-    // current top-left, so the expand animation always grows
-    // from wherever the user last dropped the panel.
-    CGRect cur = self.collapsedFrame;
-    cur.origin = self.frame.origin;
-    self.collapsedFrame = cur;
+    // collapsedFrame is the view's SCREEN position (the view
+    // is at (0, 0) in the window, so its screen top-left is
+    // the window's top-left).  Mirror the window's frame here
+    // so the expand animation always grows from the spot the
+    // user last dropped the panel.
+    self.collapsedFrame = wf;
 
-    // Mirror the view's frame onto the host window so the
-    // window stays "just big enough" to contain the view.
-    if (self.hostWindow != nil) {
-        self.hostWindow.frame = self.frame;
-    }
+    NSLog(@"[FloatingView] handlePan DONE new winFrame=%@", NSStringFromCGRect(wf));
 }
 
 // DLGMemor-style "tap empty area to collapse".  Same logic as
