@@ -750,7 +750,7 @@ static const NSTimeInterval kAnimDuration   = 0.25;
         gCurrentFeature = -1;  // reset; next expand starts fresh
         // Re-expand the floating menu so the user can quickly
         // switch to a different feature without an extra tap.
-        [gFloatingWindow setExpanded:YES animated:YES];
+        [gFloatingWindow.floatingView setExpanded:YES animated:YES];
     }
 }
 
