@@ -36,18 +36,24 @@ static bool readMemorySafe(uintptr_t address, T& outValue) {
 @property (nonatomic, weak) WKWebView *webView;
 @end
 
-@interface FloatingWindow : UIWindow
+@interface FloatingView : UIView
 @property (nonatomic, strong) UIButton *btnFloat;
 @property (nonatomic, strong) UIButton *btnMemorySearch;
 @property (nonatomic, strong) UIButton *btnPointScan;
 @property (nonatomic, assign) BOOL expanded;
 @property (nonatomic, assign) CGRect collapsedFrame;
+@property (nonatomic, weak) UIWindow *hostWindow;
 - (void)handlePan:(UIPanGestureRecognizer *)sender;
+- (void)handleTap:(UITapGestureRecognizer *)sender;
 - (void)btnTapped;
 - (void)setExpanded:(BOOL)expanded animated:(BOOL)animated;
 - (void)optionMemorySearchTapped;
 - (void)optionPointScanTapped;
 - (void)openFeature:(NSInteger)featureID;
+@end
+
+@interface FloatingWindow : UIWindow
+@property (nonatomic, strong) FloatingView *floatingView;
 @end
 
 @interface OverlayWindow : UIWindow
@@ -352,25 +358,40 @@ static const CGFloat kShadowOffsetY         = 6.0;
 static const CGFloat kShadowRadius          = 14.0;
 static const NSTimeInterval kAnimDuration   = 0.25;
 
-@implementation FloatingWindow
+// ============================================================
+// FloatingView
+// ============================================================
+//
+// The actual floating UI, modelled directly on DLGMemor's
+// DLGMemUIView: a single UIView that owns ALL the drawing
+// (background, corner radius, drop shadow, alpha), all the
+// buttons, and all the gestures.  The view changes its own
+// frame for expand/collapse.
+//
+// Why a UIView and not a UIWindow:
+//   The previous attempt put the drawing on the FloatingWindow
+//   itself.  But iOS always draws the window's rootViewController
+//   view on top of the window's layer, and that view defaults to
+//   opaque, so the window's backgroundColor / cornerRadius /
+//   shadow were all hidden.  Putting the drawing on a subview
+//   fixes that — the view sits *inside* the (transparent)
+//   rootVC.view, so its background and shadow actually render.
+//
+//   The FloatingWindow is just a transparent container that
+//   hosts this view.  When the view's frame changes, the
+//   view's hostWindow property is updated so the window stays
+//   "just big enough" to contain the view (and its shadow).
+//
+@implementation FloatingView
 
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
-        self.windowLevel = UIWindowLevelAlert + 100;
-        // backgroundColor flips to black when expanded (see
-        // setExpanded:animated:).  Cleared back to transparent
-        // on collapse so the host app shows through.
-        self.backgroundColor = [UIColor clearColor];
-
-        // iOS 15+ 対応: rootViewController を設定
-        UIViewController *rootVC = [[UIViewController alloc] init];
-        rootVC.view.backgroundColor = [UIColor clearColor];
-        self.rootViewController = rootVC;
-
-        // ----- Layer style (DLGMemor pattern) -----
-        // masksToBounds must be NO so the shadow can extend
-        // outside the window's frame.  cornerRadius and
+        // ----- Visual style (on the view, not the window) -----
+        self.backgroundColor = [UIColor blackColor];
+        self.opaque = YES;
+        // masksToBounds = NO so the drop shadow can extend
+        // outside the view's frame.  cornerRadius and
         // shadowOpacity are animated in setExpanded:animated:.
         self.layer.masksToBounds = NO;
         self.layer.cornerRadius = kCollapsedSize / 2.0;
@@ -381,11 +402,11 @@ static const NSTimeInterval kAnimDuration   = 0.25;
         self.alpha = kCollapsedAlpha;               // 0.5 when collapsed
 
         // Remember the small circle's frame on screen so the
-        // window can grow from this exact anchor when expanded.
+        // view can grow from this exact anchor when expanded.
         self.collapsedFrame = CGRectMake(frame.origin.x, frame.origin.y, kCollapsedSize, kCollapsedSize);
         self.expanded = NO;
 
-        // ---- Main button (the circle) ----
+        // ---- Main button (the AG circle) ----
         self.btnFloat = [UIButton buttonWithType:UIButtonTypeCustom];
         self.btnFloat.frame = CGRectMake(0, 0, kCollapsedSize, kCollapsedSize);
         self.btnFloat.backgroundColor = [UIColor colorWithRed:0.05 green:0.05 blue:0.08 alpha:0.85];
@@ -398,26 +419,30 @@ static const NSTimeInterval kAnimDuration   = 0.25;
         [self.btnFloat setTitleColor:[UIColor colorWithRed:0.0 green:0.94 blue:1.0 alpha:1.0] forState:UIControlStateNormal];
         self.btnFloat.titleLabel.font = [UIFont fontWithName:@"Outfit-ExtraBold" size:16] ?: [UIFont systemFontOfSize:16 weight:UIFontWeightBold];
 
-        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
-        [self.btnFloat addGestureRecognizer:pan];
-
         [self.btnFloat addTarget:self action:@selector(btnTapped) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:self.btnFloat];
 
+        // ---- Pan gesture: on the view, not the button. ----
+        // This matches DLGMemor: the pan is on the DLGMemUIView
+        // itself, so the user can drag from anywhere on the
+        // panel — the circle, the menu, even the empty area
+        // around the buttons.  The previous version put the
+        // pan on the AG button, which meant dragging from
+        // outside the circle did nothing.
+        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
+        [self addGestureRecognizer:pan];
+
         // ---- Tap gesture: DLGMemor-style "tap empty area to
         //      collapse".  Always active; the handler decides
-        //      what to do based on tap location + state.  We
-        //      set cancelsTouchesInView = NO so the AG button
-        //      and option buttons still receive their own
-        //      touchUpInside events. ----
+        //      what to do based on tap location + state. ----
         UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleTap:)];
-        tap.cancelsTouchesInView = NO;
+        tap.cancelsTouchesInView = NO;   // let subview buttons still get touchUpInside
         [self addGestureRecognizer:tap];
 
-        // ---- Option buttons (DLGMemor system-button style:
-        //      white text, no background, no border — just text
-        //      on the panel's black background).  Hidden by
-        //      default; shown + faded in by setExpanded:. ----
+        // ---- Option buttons (system-button style: white text,
+        //      no background — just text on the view's black
+        //      background).  Hidden by default; shown + faded
+        //      in by setExpanded:. ----
         CGFloat optionY1 = kExpandedCircleSize + 10;
         CGFloat optionY2 = optionY1 + kOptionHeight + kOptionVerticalGap;
         UIFont  *optionFont = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
@@ -450,12 +475,17 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 }
 
 - (void)handlePan:(UIPanGestureRecognizer *)sender {
+    // Pan is on the view, so the user can drag from anywhere on
+    // the panel.  We move self.center in the superview's coord
+    // system; the translation from the gesture is in self's
+    // coord system, which equals the superview's because the
+    // view doesn't rotate or scale.
     CGPoint translation = [sender translationInView:self];
     CGPoint newCenter = CGPointMake(self.center.x + translation.x, self.center.y + translation.y);
 
-    // Clamp to screen bounds (don't let the button go off-screen)
+    // Clamp to screen bounds (don't let the view go off-screen)
     // but DO NOT snap to the nearest edge.  The user dragged it
-    // somewhere specific, so on release the button stays exactly
+    // somewhere specific, so on release the view stays exactly
     // where they put it.
     CGRect screenBounds = [UIScreen mainScreen].bounds;
     newCenter.x = MAX(self.frame.size.width / 2, MIN(screenBounds.size.width - self.frame.size.width / 2, newCenter.x));
@@ -464,29 +494,30 @@ static const NSTimeInterval kAnimDuration   = 0.25;
     self.center = newCenter;
     [sender setTranslation:CGPointZero inView:self];
 
-    // Keep the collapsed-anchor's origin synced with the window's
-    // current top-left.  The circle is at (0, 0) inside the window
-    // in both states, so window origin = circle origin.  This
-    // makes the expand/collapse animation always grow from the
-    // spot the user last dragged the button to.
+    // Keep the collapsed-anchor's origin synced with the view's
+    // current top-left, so the expand animation always grows
+    // from wherever the user last dropped the panel.
     CGRect cur = self.collapsedFrame;
     cur.origin = self.frame.origin;
     self.collapsedFrame = cur;
+
+    // Mirror the view's frame onto the host window so the
+    // window stays "just big enough" to contain the view.
+    if (self.hostWindow != nil) {
+        self.hostWindow.frame = self.frame;
+    }
 }
 
-// DLGMemor-style "tap empty area to collapse".  The recogniser
-// fires for every tap on the panel; we let the AG button and the
-// two option buttons handle their own taps (they sit on top of
-// the panel) and only collapse when the user tapped the "blank"
-// area around them.  Same logic as DLGMemUIView.handleGesture:,
-// just adapted to a button-based menu instead of a text-field
-// menu.
+// DLGMemor-style "tap empty area to collapse".  Same logic as
+// DLGMemUIView.handleGesture:, just adapted to a button-based
+// menu (the AG button + 2 option buttons) instead of a
+// text-field menu.
 - (void)handleTap:(UITapGestureRecognizer *)sender {
     if (sender.state != UIGestureRecognizerStateEnded) return;
 
     CGPoint pt = [sender locationInView:self];
 
-    if (CGRectContainsPoint(self.btnFloat.frame, pt))       return;  // btnTapped
+    if (CGRectContainsPoint(self.btnFloat.frame, pt))        return;  // btnTapped
     if (CGRectContainsPoint(self.btnMemorySearch.frame, pt)) return;  // optionMemorySearchTapped
     if (CGRectContainsPoint(self.btnPointScan.frame, pt))   return;  // optionPointScanTapped
 
@@ -496,7 +527,7 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 }
 
 - (void)btnTapped {
-    // Tap on the circle in either state toggles expand/collapse.
+    // Tap on the AG circle in either state toggles expand/collapse.
     if (self.expanded) {
         [self setExpanded:NO animated:YES];
     } else {
@@ -513,7 +544,7 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 
     if (expanded) {
         // Make the option buttons visible immediately so they
-        // can be hit-tested while the spring animation runs.
+        // can be hit-tested while the animation runs.
         self.btnMemorySearch.hidden = NO;
         self.btnPointScan.hidden   = NO;
 
@@ -522,7 +553,6 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 
         void (^expandAnim)(void) = ^{
             self.frame = targetFrame;
-            self.backgroundColor = [UIColor blackColor];
             self.alpha = kExpandedAlpha;
             self.layer.cornerRadius  = kExpandedCornerRadius;
             self.layer.shadowOpacity = kShadowOpacityExpanded;
@@ -536,7 +566,6 @@ static const NSTimeInterval kAnimDuration   = 0.25;
             // expand completion block to avoid animation
             // rounding on the last frame).
             self.frame = targetFrame;
-            self.backgroundColor = [UIColor blackColor];
             self.alpha = kExpandedAlpha;
             self.layer.cornerRadius  = kExpandedCornerRadius;
             self.layer.shadowOpacity = kShadowOpacityExpanded;
@@ -567,7 +596,6 @@ static const NSTimeInterval kAnimDuration   = 0.25;
         };
         void (^collapseDone)(BOOL) = ^(BOOL finished) {
             self.frame = targetFrame;
-            self.backgroundColor = [UIColor clearColor];
             self.alpha = kCollapsedAlpha;
             self.layer.cornerRadius  = kCollapsedSize / 2.0;
             self.layer.shadowOpacity = 0.0;
@@ -585,6 +613,16 @@ static const NSTimeInterval kAnimDuration   = 0.25;
             collapseAnim();
             collapseDone(YES);
         }
+    }
+
+    // Keep the host window sized to the view.  The window is
+    // just a container; sizing it to match the view avoids
+    // clipping the view or its drop shadow.
+    if (self.hostWindow != nil) {
+        CGRect wf = self.hostWindow.frame;
+        wf.origin = self.frame.origin;
+        wf.size   = self.frame.size;
+        self.hostWindow.frame = wf;
     }
 }
 
@@ -606,10 +644,56 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kAnimDuration * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        self.hidden = YES;
+        if (self.hostWindow != nil) self.hostWindow.hidden = YES;
         gOverlayWindow.hidden = NO;
         [gOverlayWindow applyCurrentFeature];
     });
+}
+
+@end
+
+// ============================================================
+// FloatingWindow
+// ============================================================
+//
+// Transparent container.  All the drawing / gestures / expand
+// logic lives on the FloatingView hosted inside this window.
+// We just need: a windowLevel, a transparent background, a
+// transparent rootViewController (required on iOS 15+), and
+// the FloatingView itself as a subview of the rootVC's view.
+//
+@implementation FloatingWindow
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.windowLevel = UIWindowLevelAlert + 100;
+        self.backgroundColor = [UIColor clearColor];
+        self.userInteractionEnabled = YES;
+
+        // iOS 15+/26 requires every UIWindow to have a
+        // rootViewController.  Make its view fully transparent
+        // (opaque = NO) so the FloatingView underneath shows
+        // through cleanly.
+        UIViewController *rootVC = [[UIViewController alloc] init];
+        rootVC.view.opaque = NO;
+        rootVC.view.backgroundColor = [UIColor clearColor];
+        rootVC.view.userInteractionEnabled = YES;
+        self.rootViewController = rootVC;
+
+        // The actual UI: a FloatingView that owns all the
+        // drawing, gestures, and expand/collapse animation.
+        // The view's frame is in the rootVC.view's coord
+        // system (which fills the window), so it starts at
+        // (0, 0, w, h) — fully covering the window's content.
+        // Passing `frame` (which is in screen coords) would
+        // put the view off-screen inside the rootVC.view.
+        self.floatingView = [[FloatingView alloc] initWithFrame:
+            CGRectMake(0, 0, frame.size.width, frame.size.height)];
+        self.floatingView.hostWindow = self;
+        [rootVC.view addSubview:self.floatingView];
+    }
+    return self;
 }
 
 @end
