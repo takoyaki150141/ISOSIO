@@ -545,8 +545,23 @@ static const NSTimeInterval kAnimDuration   = 0.25;
     if (_expanded == expanded) return;
     _expanded = expanded;
 
-    CGFloat x = self.collapsedFrame.origin.x;
-    CGFloat y = self.collapsedFrame.origin.y;
+    // The view's frame is ALWAYS (0, 0, w, h) in the
+    // rootVC.view's coord system.  The host WINDOW's origin
+    // is what places the view on screen.  Previous bug: we
+    // built targetFrame from collapsedFrame.origin (which
+    // is a screen position), then assigned it to self.frame
+    // — so the view was at (windowScreenX, windowScreenY)
+    // inside the 50x50 rootVC.view, i.e. mostly off-screen
+    // inside the rootVC.view's clip area, and the panel
+    // 'flew to the bottom-right' on every expand.
+    CGRect targetViewFrame;
+    if (expanded) {
+        targetViewFrame = CGRectMake(0, 0, kExpandedWidth, kExpandedHeight);
+    } else {
+        targetViewFrame = CGRectMake(0, 0, kCollapsedSize, kCollapsedSize);
+    }
+    CGRect bigCircle   = CGRectMake(0, 0, kExpandedCircleSize, kExpandedCircleSize);
+    CGRect smallCircle = CGRectMake(0, 0, kCollapsedSize, kCollapsedSize);
 
     if (expanded) {
         // Make the option buttons visible immediately so they
@@ -554,11 +569,28 @@ static const NSTimeInterval kAnimDuration   = 0.25;
         self.btnMemorySearch.hidden = NO;
         self.btnPointScan.hidden   = NO;
 
-        CGRect targetFrame = CGRectMake(x, y, kExpandedWidth, kExpandedHeight);
-        CGRect bigCircle   = CGRectMake(0, 0, kExpandedCircleSize, kExpandedCircleSize);
+        // Build the new window frame: keep the origin from
+        // collapsedFrame (the spot the user dropped the
+        // panel) but clamp it so the expanded window fits
+        // entirely within the screen.  This prevents the
+        // 'expanded panel off-screen, can't tap the AG circle
+        // to collapse' failure mode.
+        CGRect newWf;
+        newWf.size   = targetViewFrame.size;
+        newWf.origin = self.collapsedFrame.origin;
+        CGRect screenBounds = [UIScreen mainScreen].bounds;
+        newWf.origin.x = MAX(0, MIN(screenBounds.size.width  - newWf.size.width,  newWf.origin.x));
+        newWf.origin.y = MAX(0, MIN(screenBounds.size.height - newWf.size.height, newWf.origin.y));
+        // Mirror the clamped origin back into collapsedFrame
+        // so a subsequent collapse animation lands at the
+        // clamped position.
+        self.collapsedFrame.origin = newWf.origin;
+
+        NSLog(@"[FloatingView] setExpanded:YES newWf=%@ screen=%@",
+              NSStringFromCGRect(newWf), NSStringFromCGRect(screenBounds));
 
         void (^expandAnim)(void) = ^{
-            self.frame = targetFrame;
+            self.frame = targetViewFrame;
             self.alpha = kExpandedAlpha;
             self.layer.cornerRadius  = kExpandedCornerRadius;
             self.layer.shadowOpacity = kShadowOpacityExpanded;
@@ -566,15 +598,19 @@ static const NSTimeInterval kAnimDuration   = 0.25;
             self.btnFloat.layer.cornerRadius = kExpandedCircleSize / 2.0;
             self.btnMemorySearch.alpha = 1.0;
             self.btnPointScan.alpha   = 1.0;
+            if (self.hostWindow != nil) {
+                self.hostWindow.frame = newWf;
+            }
         };
         void (^expandDone)(BOOL) = ^(BOOL finished) {
-            // Final-state pin (DLGMemor does the same in its
-            // expand completion block to avoid animation
-            // rounding on the last frame).
-            self.frame = targetFrame;
+            // Final-state pin (DLGMemor does the same).
+            self.frame = targetViewFrame;
             self.alpha = kExpandedAlpha;
             self.layer.cornerRadius  = kExpandedCornerRadius;
             self.layer.shadowOpacity = kShadowOpacityExpanded;
+            if (self.hostWindow != nil) {
+                self.hostWindow.frame = newWf;
+            }
         };
 
         if (animated) {
@@ -588,8 +624,15 @@ static const NSTimeInterval kAnimDuration   = 0.25;
             expandDone(YES);
         }
     } else {
-        CGRect targetFrame = CGRectMake(x, y, kCollapsedSize, kCollapsedSize);
-        CGRect smallCircle = CGRectMake(0, 0, kCollapsedSize, kCollapsedSize);
+        // Collapse: shrink the window back to 50x50, keep
+        // the origin at collapsedFrame.origin (which was
+        // updated to the clamped position during the last
+        // expand).
+        CGRect newWf;
+        newWf.size   = targetViewFrame.size;
+        newWf.origin = self.collapsedFrame.origin;
+
+        NSLog(@"[FloatingView] setExpanded:NO newWf=%@", NSStringFromCGRect(newWf));
 
         void (^collapseAnim)(void) = ^{
             self.alpha = kCollapsedAlpha;
@@ -599,14 +642,20 @@ static const NSTimeInterval kAnimDuration   = 0.25;
             self.btnFloat.layer.cornerRadius = kCollapsedSize / 2.0;
             self.btnMemorySearch.alpha = 0.0;
             self.btnPointScan.alpha   = 0.0;
+            if (self.hostWindow != nil) {
+                self.hostWindow.frame = newWf;
+            }
         };
         void (^collapseDone)(BOOL) = ^(BOOL finished) {
-            self.frame = targetFrame;
+            self.frame = targetViewFrame;
             self.alpha = kCollapsedAlpha;
             self.layer.cornerRadius  = kCollapsedSize / 2.0;
             self.layer.shadowOpacity = 0.0;
             self.btnMemorySearch.hidden = YES;
             self.btnPointScan.hidden   = YES;
+            if (self.hostWindow != nil) {
+                self.hostWindow.frame = newWf;
+            }
         };
 
         if (animated) {
@@ -619,16 +668,6 @@ static const NSTimeInterval kAnimDuration   = 0.25;
             collapseAnim();
             collapseDone(YES);
         }
-    }
-
-    // Keep the host window sized to the view.  The window is
-    // just a container; sizing it to match the view avoids
-    // clipping the view or its drop shadow.
-    if (self.hostWindow != nil) {
-        CGRect wf = self.hostWindow.frame;
-        wf.origin = self.frame.origin;
-        wf.size   = self.frame.size;
-        self.hostWindow.frame = wf;
     }
 }
 
