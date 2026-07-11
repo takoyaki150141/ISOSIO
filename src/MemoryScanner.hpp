@@ -29,6 +29,16 @@ struct LockedValue {
     std::string value;
 };
 
+// Point-scan / pin: a snapshot-friendly view of a single
+// address. Cached value is refreshed in-place by refreshPinned().
+// Field name 'value' matches DLGMemor's search_result.value so
+// the two repos stay byte-for-byte compatible on the wire.
+struct PinnedAddress {
+    mach_vm_address_t address;
+    ValueType type;
+    std::string value;  // textual representation
+};
+
 class MemoryScanner {
 public:
     static MemoryScanner& getInstance() {
@@ -45,6 +55,25 @@ public:
     void updateLockedValues();
     void clear();
 
+    // Point-scan / pin API
+    // pinAddress reads the current value at the given address and
+    // stores it in pinnedAddresses. Idempotent: pinning an already
+    // pinned address is a no-op.
+    void pinAddress(mach_vm_address_t address, ValueType type);
+    // unpinAddress removes the address from the pin list. Safe to
+    // call for non-pinned addresses.
+    void unpinAddress(mach_vm_address_t address);
+    // isPinned is a quick O(n) lookup; n is normally < 100.
+    bool isPinned(mach_vm_address_t address) const;
+    // refreshPinned re-reads every pinned address from memory in-
+    // place. Cheap (n × sizeof(type)) and safe to call frequently.
+    void refreshPinned();
+    // copyPinnedAddresses returns a deep copy of the pin list.  The
+    // caller owns the returned std::vector; it can be safely
+    // iterated from a UI thread while refreshPinned() runs on
+    // another.
+    std::vector<PinnedAddress> copyPinnedAddresses() const;
+
     std::vector<ScanResult>& getResults() { return results; }
 
 private:
@@ -55,5 +84,6 @@ private:
 
     std::vector<ScanResult> results;
     std::vector<LockedValue> lockedValues;
+    std::vector<PinnedAddress> pinnedAddresses;
     ValueType currentType;
 };

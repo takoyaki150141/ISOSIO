@@ -277,3 +277,88 @@ void MemoryScanner::clear() {
     results.clear();
     lockedValues.clear();
 }
+
+// ---------------------------------------------------------------
+// Point-scan / pin implementation
+// ---------------------------------------------------------------
+
+void MemoryScanner::pinAddress(mach_vm_address_t address, ValueType type) {
+    if (address == 0) return;
+    // Idempotent: don't double-pin the same address.
+    for (const auto& p : pinnedAddresses) {
+        if (p.address == address) return;
+    }
+
+    // Read the current value at the address and cache it.  We use
+    // the same safe-read helpers used by firstScan, so we can read
+    // both i32/i64 and float/double.
+    int size = (type == Type_i32) ? 4 :
+               (type == Type_i64) ? 8 :
+               (type == Type_Float) ? 4 : 8;
+
+    PinnedAddress p;
+    p.address = address;
+    p.type = type;
+    p.value = "?";
+
+    if (type == Type_i32) {
+        int32_t v;
+        if (readMemorySafe<int32_t>(address, v)) {
+            p.value = std::to_string(v);
+        }
+    } else if (type == Type_i64) {
+        int64_t v;
+        if (readMemorySafe<int64_t>(address, v)) {
+            p.value = std::to_string(v);
+        }
+    } else if (type == Type_Float) {
+        float v;
+        if (readMemorySafe<float>(address, v)) {
+            p.value = std::to_string(v);
+        }
+    } else if (type == Type_Double) {
+        double v;
+        if (readMemorySafe<double>(address, v)) {
+            p.value = std::to_string(v);
+        }
+    }
+    (void)size;  // for future use if we add more types
+
+    pinnedAddresses.push_back(p);
+}
+
+void MemoryScanner::unpinAddress(mach_vm_address_t address) {
+    pinnedAddresses.erase(
+        std::remove_if(pinnedAddresses.begin(), pinnedAddresses.end(),
+            [address](const PinnedAddress& p) { return p.address == address; }),
+        pinnedAddresses.end());
+}
+
+bool MemoryScanner::isPinned(mach_vm_address_t address) const {
+    for (const auto& p : pinnedAddresses) {
+        if (p.address == address) return true;
+    }
+    return false;
+}
+
+void MemoryScanner::refreshPinned() {
+    for (auto& p : pinnedAddresses) {
+        if (p.type == Type_i32) {
+            int32_t v;
+            if (readMemorySafe<int32_t>(p.address, v)) p.value = std::to_string(v);
+        } else if (p.type == Type_i64) {
+            int64_t v;
+            if (readMemorySafe<int64_t>(p.address, v)) p.value = std::to_string(v);
+        } else if (p.type == Type_Float) {
+            float v;
+            if (readMemorySafe<float>(p.address, v)) p.value = std::to_string(v);
+        } else if (p.type == Type_Double) {
+            double v;
+            if (readMemorySafe<double>(p.address, v)) p.value = std::to_string(v);
+        }
+    }
+}
+
+std::vector<PinnedAddress> MemoryScanner::copyPinnedAddresses() const {
+    return pinnedAddresses;  // std::vector copy-ctor already does the right thing
+}

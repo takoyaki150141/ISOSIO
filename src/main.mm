@@ -190,6 +190,94 @@ static OverlayWindow *gOverlayWindow = nil;
             uintptr_t address = [addrNum unsignedLongLongValue];
             MemoryScanner::getInstance().unlockValue(address);
         }
+        // -------- Point-scan / pin --------
+        else if ([action isEqualToString:@"pin"]) {
+            NSNumber *addrNum = dict[@"address"];
+            NSString *typeStr = dict[@"type"];
+            uintptr_t address = [addrNum unsignedLongLongValue];
+            ValueType type = ValueType::Type_i32;
+            if ([typeStr isEqualToString:@"i64"]) type = ValueType::Type_i64;
+            else if ([typeStr isEqualToString:@"float"]) type = ValueType::Type_Float;
+            else if ([typeStr isEqualToString:@"double"]) type = ValueType::Type_Double;
+            MemoryScanner::getInstance().pinAddress(address, type);
+            // Send the updated pinned list back to the UI.
+            auto pinned = MemoryScanner::getInstance().copyPinnedAddresses();
+            std::stringstream ss;
+            ss << "[";
+            for (size_t i = 0; i < pinned.size(); ++i) {
+                if (i > 0) ss << ",";
+                ss << "{\"address\":" << pinned[i].address
+                   << ",\"type\":\"";
+                switch (pinned[i].type) {
+                    case ValueType::Type_i32: ss << "i32"; break;
+                    case ValueType::Type_i64: ss << "i64"; break;
+                    case ValueType::Type_Float: ss << "float"; break;
+                    case ValueType::Type_Double: ss << "double"; break;
+                }
+                ss << "\",\"value\":\"" << pinned[i].value << "\"}";
+            }
+            ss << "]";
+            std::string json = ss.str();
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSString *js = [NSString stringWithFormat:@"window.updatePinned('%s');", json.c_str()];
+                [self.webView evaluateJavaScript:js completionHandler:nil];
+            });
+        }
+        else if ([action isEqualToString:@"unpin"]) {
+            NSNumber *addrNum = dict[@"address"];
+            uintptr_t address = [addrNum unsignedLongLongValue];
+            MemoryScanner::getInstance().unpinAddress(address);
+        }
+        else if ([action isEqualToString:@"refreshPinned"]) {
+            // Re-read every pinned address from memory in-place
+            // then push the new values to the UI.
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+                MemoryScanner::getInstance().refreshPinned();
+                auto pinned = MemoryScanner::getInstance().copyPinnedAddresses();
+                std::stringstream ss;
+                ss << "[";
+                for (size_t i = 0; i < pinned.size(); ++i) {
+                    if (i > 0) ss << ",";
+                    ss << "{\"address\":" << pinned[i].address
+                       << ",\"type\":\"";
+                    switch (pinned[i].type) {
+                        case ValueType::Type_i32: ss << "i32"; break;
+                        case ValueType::Type_i64: ss << "i64"; break;
+                        case ValueType::Type_Float: ss << "float"; break;
+                        case ValueType::Type_Double: ss << "double"; break;
+                    }
+                    ss << "\",\"value\":\"" << pinned[i].value << "\"}";
+                }
+                ss << "]";
+                std::string json = ss.str();
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    NSString *js = [NSString stringWithFormat:@"window.updatePinned('%s');", json.c_str()];
+                    [self.webView evaluateJavaScript:js completionHandler:nil];
+                });
+            });
+        }
+        else if ([action isEqualToString:@"getPinned"]) {
+            // Synchronous snapshot of the pin list, no re-read.
+            auto pinned = MemoryScanner::getInstance().copyPinnedAddresses();
+            std::stringstream ss;
+            ss << "[";
+            for (size_t i = 0; i < pinned.size(); ++i) {
+                if (i > 0) ss << ",";
+                ss << "{\"address\":" << pinned[i].address
+                   << ",\"type\":\"";
+                switch (pinned[i].type) {
+                    case ValueType::Type_i32: ss << "i32"; break;
+                    case ValueType::Type_i64: ss << "i64"; break;
+                    case ValueType::Type_Float: ss << "float"; break;
+                    case ValueType::Type_Double: ss << "double"; break;
+                }
+                ss << "\",\"value\":\"" << pinned[i].value << "\"}";
+            }
+            ss << "]";
+            std::string json = ss.str();
+            NSString *js = [NSString stringWithFormat:@"window.updatePinned('%s');", json.c_str()];
+            [self.webView evaluateJavaScript:js completionHandler:nil];
+        }
         else if ([action isEqualToString:@"setSpeed"]) {
             NSNumber *speedNum = dict[@"speed"];
             double speed = [speedNum doubleValue];
@@ -324,13 +412,65 @@ static void initializeCheatEngine() {
     NSLog(@"[Antigravity] Dylib loaded into target process!");
     
     SpeedHack::getInstance().start();
-    
+
     dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0));
     dispatch_source_set_timer(timer, DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC, 5 * NSEC_PER_MSEC);
     dispatch_source_set_event_handler(timer, ^{
         MemoryScanner::getInstance().updateLockedValues();
     });
     dispatch_resume(timer);
+
+    // Point-scan refresh timer: every 1.0s, re-read every pinned
+    // address and push the new values to the WKWebView.  Only
+    // touches the UI if the user has at least one pinned address,
+    // so when there are no pins it's a no-op cost-wise.
+    dispatch_source_t pinnedTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0));
+    dispatch_source_set_timer(pinnedTimer,
+                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                              (uint64_t)(1.0 * NSEC_PER_SEC),
+                              (uint64_t)(0.1 * NSEC_PER_SEC));
+    dispatch_source_set_event_handler(pinnedTimer, ^{
+        auto pinned = MemoryScanner::getInstance().copyPinnedAddresses();
+        if (pinned.empty()) return;  // no pins, skip everything
+        MemoryScanner::getInstance().refreshPinned();
+        // Re-build the JSON after the refresh and push to the UI.
+        std::stringstream ss;
+        ss << "[";
+        for (size_t i = 0; i < pinned.size(); ++i) {
+            if (i > 0) ss << ",";
+            ss << "{\"address\":" << pinned[i].address
+               << ",\"type\":\"";
+            switch (pinned[i].type) {
+                case ValueType::Type_i32: ss << "i32"; break;
+                case ValueType::Type_i64: ss << "i64"; break;
+                case ValueType::Type_Float: ss << "float"; break;
+                case ValueType::Type_Double: ss << "double"; break;
+            }
+            ss << "\",\"value\":\"" << pinned[i].value << "\"}";
+        }
+        ss << "]";
+        std::string json = ss.str();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIWindow *kw = nil;
+            if (@available(iOS 13.0, *)) {
+                for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
+                    if (s.activationState == UISceneActivationStateForegroundActive &&
+                        [s isKindOfClass:[UIWindowScene class]]) {
+                        for (UIWindow *w in ((UIWindowScene *)s).windows) {
+                            if ([w isKindOfClass:[NSClassFromString(@"OverlayWindow") class]]) { kw = w; break; }
+                        }
+                    }
+                    if (kw != nil) break;
+                }
+            }
+            WKWebView *web = [kw valueForKey:@"webView"];
+            if (web != nil) {
+                NSString *js = [NSString stringWithFormat:@"window.updatePinned('%s');", json.c_str()];
+                [web evaluateJavaScript:js completionHandler:nil];
+            }
+        });
+    });
+    dispatch_resume(pinnedTimer);
     
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification * _Nonnull note) {
         
