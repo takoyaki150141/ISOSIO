@@ -527,6 +527,7 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 }
 
 - (void)btnTapped {
+    NSLog(@"[FloatingView] btnTapped expanded=%d", self.expanded);
     // Tap on the AG circle in either state toggles expand/collapse.
     if (self.expanded) {
         [self setExpanded:NO animated:YES];
@@ -692,6 +693,8 @@ static const NSTimeInterval kAnimDuration   = 0.25;
             CGRectMake(0, 0, frame.size.width, frame.size.height)];
         self.floatingView.hostWindow = self;
         [rootVC.view addSubview:self.floatingView];
+        NSLog(@"[FloatingWindow] init frame=%@ floatingView=%@ hostWinBackRef=%@",
+              NSStringFromCGRect(frame), self.floatingView, self.floatingView.hostWindow);
     }
     return self;
 }
