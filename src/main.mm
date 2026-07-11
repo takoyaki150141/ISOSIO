@@ -550,7 +550,7 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 }
 
 - (void)reload {
-    auto& results = MemoryScanner::getInstance().getResults();
+    std::vector<ScanResult>& results = MemoryScanner::getInstance().getResults();
     self.lblResult.text = [NSString stringWithFormat:@"Found %lu", (unsigned long)results.size()];
     [self.tvResult reloadData];
 }
@@ -589,9 +589,9 @@ static const NSTimeInterval kAnimDuration   = 0.25;
     cell.textLabel.textColor = [UIColor whiteColor];
     cell.textLabel.font = [UIFont fontWithName:@"Menlo-Regular" size:14] ?: [UIFont systemFontOfSize:14];
     
-    auto& results = MemoryScanner::getInstance().getResults();
+    std::vector<ScanResult>& results = MemoryScanner::getInstance().getResults();
     if ((NSUInteger)indexPath.row >= results.size()) return cell;
-    auto& r = results[indexPath.row];
+    ScanResult& r = results[indexPath.row];
     
     NSString *addr = [NSString stringWithFormat:@"0x%llX", (unsigned long long)r.address];
     NSString *val  = readValueAsString(r.address, (int)r.type);
@@ -632,9 +632,9 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     // Tap a row to pin it.
-    auto& results = MemoryScanner::getInstance().getResults();
+    std::vector<ScanResult>& results = MemoryScanner::getInstance().getResults();
     if ((NSUInteger)indexPath.row >= results.size()) return;
-    auto& r = results[indexPath.row];
+    ScanResult& r = results[indexPath.row];
     MemoryScanner::getInstance().pinAddress(r.address, (ValueType)r.type);
 }
 
@@ -721,7 +721,7 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 }
 
 - (void)reload {
-    auto pinned = MemoryScanner::getInstance().copyPinnedAddresses();
+    std::vector<PinnedAddress> pinned = MemoryScanner::getInstance().copyPinnedAddresses();
     self.lblPinned.text = [NSString stringWithFormat:@"Pinned %lu", (unsigned long)pinned.size()];
     [self.tvPinned reloadData];
 }
@@ -743,9 +743,9 @@ static const NSTimeInterval kAnimDuration   = 0.25;
     cell.textLabel.textColor = [UIColor whiteColor];
     cell.textLabel.font = [UIFont fontWithName:@"Menlo-Regular" size:14] ?: [UIFont systemFontOfSize:14];
 
-    auto pinned = MemoryScanner::getInstance().copyPinnedAddresses();
+    std::vector<PinnedAddress> pinned = MemoryScanner::getInstance().copyPinnedAddresses();
     if ((NSUInteger)indexPath.row >= pinned.size()) return cell;
-    auto& p = pinned[indexPath.row];
+    PinnedAddress& p = pinned[indexPath.row];
     
     NSString *addr = [NSString stringWithFormat:@"0x%llX", (unsigned long long)p.address];
     NSString *val  = [NSString stringWithUTF8String:p.value.c_str()];
@@ -766,9 +766,9 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     // Tap a row to unpin.
-    auto pinned = MemoryScanner::getInstance().copyPinnedAddresses();
+    std::vector<PinnedAddress> pinned = MemoryScanner::getInstance().copyPinnedAddresses();
     if ((NSUInteger)indexPath.row >= pinned.size()) return;
-    auto& p = pinned[indexPath.row];
+    PinnedAddress& p = pinned[indexPath.row];
     MemoryScanner::getInstance().unpinAddress(p.address);
     [self reload];
 }
