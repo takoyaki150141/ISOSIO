@@ -103,11 +103,12 @@ bool MemoryScanner::firstScan(ValueType type, const std::string& valueStr) {
     // Parse value based on type
     std::stringstream ss(valueStr);
     
-    if (type == ValueType::Type_i32) {
+    if (type == Type_i32) {
         int32_t val;
         if (!(ss >> val)) return false;
         
-        for (const auto& region : regions) {
+        for (std::vector<MemoryRegion>::const_iterator it = regions.begin(); it != regions.end(); ++it) {
+            const MemoryRegion& region = *it;
             vm_offset_t data;
             mach_msg_type_number_t data_size;
             kern_return_t kr = vm_read(mach_task_self(), region.start, region.size, &data, &data_size);
@@ -117,11 +118,12 @@ bool MemoryScanner::firstScan(ValueType type, const std::string& valueStr) {
             }
             if (results.size() >= 100000) break;
         }
-    } else if (type == ValueType::Type_i64) {
+    } else if (type == Type_i64) {
         int64_t val;
         if (!(ss >> val)) return false;
         
-        for (const auto& region : regions) {
+        for (std::vector<MemoryRegion>::const_iterator it = regions.begin(); it != regions.end(); ++it) {
+            const MemoryRegion& region = *it;
             vm_offset_t data;
             mach_msg_type_number_t data_size;
             kern_return_t kr = vm_read(mach_task_self(), region.start, region.size, &data, &data_size);
@@ -131,11 +133,12 @@ bool MemoryScanner::firstScan(ValueType type, const std::string& valueStr) {
             }
             if (results.size() >= 100000) break;
         }
-    } else if (type == ValueType::Type_Float) {
+    } else if (type == Type_Float) {
         float val;
         if (!(ss >> val)) return false;
         
-        for (const auto& region : regions) {
+        for (std::vector<MemoryRegion>::const_iterator it = regions.begin(); it != regions.end(); ++it) {
+            const MemoryRegion& region = *it;
             vm_offset_t data;
             mach_msg_type_number_t data_size;
             kern_return_t kr = vm_read(mach_task_self(), region.start, region.size, &data, &data_size);
@@ -145,11 +148,12 @@ bool MemoryScanner::firstScan(ValueType type, const std::string& valueStr) {
             }
             if (results.size() >= 100000) break;
         }
-    } else if (type == ValueType::Type_Double) {
+    } else if (type == Type_Double) {
         double val;
         if (!(ss >> val)) return false;
         
-        for (const auto& region : regions) {
+        for (std::vector<MemoryRegion>::const_iterator it = regions.begin(); it != regions.end(); ++it) {
+            const MemoryRegion& region = *it;
             vm_offset_t data;
             mach_msg_type_number_t data_size;
             kern_return_t kr = vm_read(mach_task_self(), region.start, region.size, &data, &data_size);
@@ -170,11 +174,12 @@ bool MemoryScanner::nextScan(const std::string& valueStr) {
     std::vector<ScanResult> newResults;
     std::stringstream ss(valueStr);
     
-    if (currentType == ValueType::Type_i32) {
+    if (currentType == Type_i32) {
         int32_t targetVal;
         if (!(ss >> targetVal)) return false;
         
-        for (const auto& res : results) {
+        for (std::vector<ScanResult>::const_iterator it = results.begin(); it != results.end(); ++it) {
+            const ScanResult& res = *it;
             int32_t currentVal;
             if (readMemorySafe<int32_t>(res.address, currentVal)) {
                 if (currentVal == targetVal) {
@@ -182,11 +187,12 @@ bool MemoryScanner::nextScan(const std::string& valueStr) {
                 }
             }
         }
-    } else if (currentType == ValueType::Type_i64) {
+    } else if (currentType == Type_i64) {
         int64_t targetVal;
         if (!(ss >> targetVal)) return false;
         
-        for (const auto& res : results) {
+        for (std::vector<ScanResult>::const_iterator it = results.begin(); it != results.end(); ++it) {
+            const ScanResult& res = *it;
             int64_t currentVal;
             if (readMemorySafe<int64_t>(res.address, currentVal)) {
                 if (currentVal == targetVal) {
@@ -194,11 +200,12 @@ bool MemoryScanner::nextScan(const std::string& valueStr) {
                 }
             }
         }
-    } else if (currentType == ValueType::Type_Float) {
+    } else if (currentType == Type_Float) {
         float targetVal;
         if (!(ss >> targetVal)) return false;
         
-        for (const auto& res : results) {
+        for (std::vector<ScanResult>::const_iterator it = results.begin(); it != results.end(); ++it) {
+            const ScanResult& res = *it;
             float currentVal;
             if (readMemorySafe<float>(res.address, currentVal)) {
                 if (currentVal == targetVal) {
@@ -206,11 +213,12 @@ bool MemoryScanner::nextScan(const std::string& valueStr) {
                 }
             }
         }
-    } else if (currentType == ValueType::Type_Double) {
+    } else if (currentType == Type_Double) {
         double targetVal;
         if (!(ss >> targetVal)) return false;
         
-        for (const auto& res : results) {
+        for (std::vector<ScanResult>::const_iterator it = results.begin(); it != results.end(); ++it) {
+            const ScanResult& res = *it;
             double currentVal;
             if (readMemorySafe<double>(res.address, currentVal)) {
                 if (currentVal == targetVal) {
@@ -227,22 +235,22 @@ bool MemoryScanner::nextScan(const std::string& valueStr) {
 bool MemoryScanner::modifyValue(uintptr_t address, ValueType type, const std::string& valueStr) {
     std::stringstream ss(valueStr);
     
-    if (type == ValueType::Type_i32) {
+    if (type == Type_i32) {
         int32_t val;
         if (ss >> val) {
             return writeMemorySafe<int32_t>(address, val);
         }
-    } else if (type == ValueType::Type_i64) {
+    } else if (type == Type_i64) {
         int64_t val;
         if (ss >> val) {
             return writeMemorySafe<int64_t>(address, val);
         }
-    } else if (type == ValueType::Type_Float) {
+    } else if (type == Type_Float) {
         float val;
         if (ss >> val) {
             return writeMemorySafe<float>(address, val);
         }
-    } else if (type == ValueType::Type_Double) {
+    } else if (type == Type_Double) {
         double val;
         if (ss >> val) {
             return writeMemorySafe<double>(address, val);
@@ -252,7 +260,8 @@ bool MemoryScanner::modifyValue(uintptr_t address, ValueType type, const std::st
 }
 
 void MemoryScanner::lockValue(uintptr_t address, ValueType type, const std::string& valueStr) {
-    for (auto& lv : lockedValues) {
+    for (std::vector<LockedValue>::iterator it = lockedValues.begin(); it != lockedValues.end(); ++it) {
+        LockedValue& lv = *it;
         if (lv.address == address) {
             lv.value = valueStr;
             return;
@@ -268,7 +277,8 @@ void MemoryScanner::unlockValue(uintptr_t address) {
 }
 
 void MemoryScanner::updateLockedValues() {
-    for (const auto& lv : lockedValues) {
+    for (std::vector<LockedValue>::const_iterator it = lockedValues.begin(); it != lockedValues.end(); ++it) {
+        const LockedValue& lv = *it;
         modifyValue(lv.address, lv.type, lv.value);
     }
 }
@@ -285,8 +295,8 @@ void MemoryScanner::clear() {
 void MemoryScanner::pinAddress(mach_vm_address_t address, ValueType type) {
     if (address == 0) return;
     // Idempotent: don't double-pin the same address.
-    for (const auto& p : pinnedAddresses) {
-        if (p.address == address) return;
+    for (std::vector<PinnedAddress>::const_iterator it = pinnedAddresses.begin(); it != pinnedAddresses.end(); ++it) {
+        if (it->address == address) return;
     }
 
     // Read the current value at the address and cache it.  We use
@@ -342,7 +352,8 @@ bool MemoryScanner::isPinned(mach_vm_address_t address) const {
 }
 
 void MemoryScanner::refreshPinned() {
-    for (auto& p : pinnedAddresses) {
+    for (std::vector<PinnedAddress>::iterator it = pinnedAddresses.begin(); it != pinnedAddresses.end(); ++it) {
+        PinnedAddress& p = *it;
         if (p.type == Type_i32) {
             int32_t v;
             if (readMemorySafe<int32_t>(p.address, v)) p.value = std::to_string(v);
