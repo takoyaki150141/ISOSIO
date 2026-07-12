@@ -137,8 +137,15 @@ static NSString* readValueAsString(uintptr_t address, int type) {
 - (void)reload;
 @end
 
+@interface FileEditorView : UIView
+@property (nonatomic, strong) UITextView *textView;
+@property (nonatomic, strong) NSString *filePath;
+@property (nonatomic, weak) id host;
+- (void)loadFile:(NSString *)path;
+@end
+
 @interface FileManagerView : UIView <UITableViewDataSource, UITableViewDelegate>
-@property (nonatomic, weak) UIWindow *host;
+@property (nonatomic, weak) id host;
 @property (nonatomic, strong) NSString *currentPath;
 @property (nonatomic, strong) NSArray *files;
 @property (nonatomic, strong) UITableView *tableView;
@@ -149,10 +156,12 @@ static NSString* readValueAsString(uintptr_t address, int type) {
 @property (nonatomic, strong) MemorySearchView *searchView;
 @property (nonatomic, strong) PointScanView *pointScanView;
 @property (nonatomic, strong) FileManagerView *fileManagerView;
+@property (nonatomic, strong) FileEditorView *fileEditorView;
 @property (nonatomic, strong) EditView *editView;
 @property (nonatomic, strong) UISegmentedControl *tabBar;
 - (void)showFeature:(NSInteger)featureID;
 - (void)showEditForAddress:(uintptr_t)address type:(int)type;
+- (void)showFileEditor:(NSString *)path;
 @end
 
 // ============================================================
@@ -893,13 +902,75 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 // the window and re-shows the floating AG chip — same UX as
 // the old WKWebView's bgTapped: behaviour.
 //
+@implementation FileEditorView
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.backgroundColor = [UIColor blackColor];
+        
+        UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, 5, frame.size.width - 150, 30)];
+        titleLabel.text = @"Edit File";
+        titleLabel.textColor = [UIColor whiteColor];
+        titleLabel.font = [UIFont boldSystemFontOfSize:16];
+        [self addSubview:titleLabel];
+
+        UIButton *btnSave = [UIButton buttonWithType:UIButtonTypeSystem];
+        btnSave.frame = CGRectMake(frame.size.width - 70, 5, 60, 30);
+        [btnSave setTitle:@"Save" forState:UIControlStateNormal];
+        [btnSave addTarget:self action:@selector(onSaveTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:btnSave];
+
+        UIButton *btnCancel = [UIButton buttonWithType:UIButtonTypeSystem];
+        btnCancel.frame = CGRectMake(frame.size.width - 140, 5, 60, 30);
+        [btnCancel setTitle:@"Cancel" forState:UIControlStateNormal];
+        [btnCancel setTitleColor:[UIColor redColor] forState:UIControlStateNormal];
+        [btnCancel addTarget:self action:@selector(onCancelTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:btnCancel];
+
+        self.textView = [[UITextView alloc] initWithFrame:CGRectMake(0, 40, frame.size.width, frame.size.height - 40)];
+        self.textView.backgroundColor = [UIColor colorWithWhite:0.1 alpha:1.0];
+        self.textView.textColor = [UIColor greenColor];
+        self.textView.font = [UIFont fontWithName:@"Menlo-Regular" size:12] ?: [UIFont systemFontOfSize:12];
+        
+        UIToolbar *toolbar = [[UIToolbar alloc] initWithFrame:CGRectMake(0, 0, frame.size.width, 44)];
+        UIBarButtonItem *flex = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
+        UIBarButtonItem *done = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self.textView action:@selector(resignFirstResponder)];
+        toolbar.items = @[flex, done];
+        self.textView.inputAccessoryView = toolbar;
+
+        [self addSubview:self.textView];
+    }
+    return self;
+}
+
+- (void)loadFile:(NSString *)path {
+    self.filePath = path;
+    NSError *error;
+    NSString *content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:&error];
+    if (content) {
+        self.textView.text = content;
+    } else {
+        self.textView.text = @"[Error: Could not read file as UTF-8 text]";
+    }
+}
+
+- (void)onSaveTapped {
+    NSError *error;
+    [self.textView.text writeToFile:self.filePath atomically:YES encoding:NSUTF8StringEncoding error:&error];
+    self.hidden = YES;
+}
+
+- (void)onCancelTapped {
+    self.hidden = YES;
+}
+@end
+
 @implementation FileManagerView
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
         self.backgroundColor = [UIColor colorWithRed:0.07 green:0.07 blue:0.07 alpha:1.0];
         
-        // Default to app's Documents directory
         NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
         self.currentPath = [paths firstObject];
 
@@ -932,7 +1003,6 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 - (void)reload {
     NSError *error;
     NSArray *contents = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:self.currentPath error:&error];
-    // Filter out hidden files and sort
     NSMutableArray *filtered = [NSMutableArray array];
     for (NSString *name in contents) {
         if (![name hasPrefix:@"."]) [filtered addObject:name];
@@ -979,9 +1049,62 @@ static const NSTimeInterval kAnimDuration   = 0.25;
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     NSString *name = self.files[indexPath.row];
     NSString *newPath = [self.currentPath stringByAppendingPathComponent:name];
+    
     BOOL isDir;
-    if ([[NSFileManager defaultManager] fileExistsAtPath:newPath isDirectory:&isDir] && isDir) {
+    [[NSFileManager defaultManager] fileExistsAtPath:newPath isDirectory:&isDir];
+    
+    if (isDir) {
         self.currentPath = newPath;
+        [self reload];
+    } else {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:name message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+        
+        [alert addAction:[UIAlertAction actionWithTitle:@"Edit (Text)" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            if (self.host != nil) {
+                [(PanelWindow *)self.host showFileEditor:newPath];
+            }
+        }]];
+        
+        [alert addAction:[UIAlertAction actionWithTitle:@"Rename" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            [self showRenameAlert:name path:newPath];
+        }]];
+        
+        [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+        
+        UIViewController *root = [UIApplication sharedApplication].keyWindow.rootViewController;
+        [root presentViewController:alert animated:YES completion:nil];
+    }
+}
+
+- (void)showRenameAlert:(NSString *)oldName path:(NSString *)oldPath {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Rename" message:nil preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+        textField.text = oldName;
+    }];
+    
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        NSString *newName = alert.textFields.firstObject.text;
+        if (newName.length == 0) return;
+        NSString *newPath = [self.currentPath stringByAppendingPathComponent:newName];
+        [[NSFileManager defaultManager] moveItemAtPath:oldPath toPath:newPath error:nil];
+        [self reload];
+    }]];
+    
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    
+    UIViewController *root = [UIApplication sharedApplication].keyWindow.rootViewController;
+    [root presentViewController:alert animated:YES completion:nil];
+}
+
+- (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
+    return YES;
+}
+
+- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (editingStyle == UITableViewCellEditingStyleDelete) {
+        NSString *name = self.files[indexPath.row];
+        NSString *fullPath = [self.currentPath stringByAppendingPathComponent:name];
+        [[NSFileManager defaultManager] removeItemAtPath:fullPath error:nil];
         [self reload];
     }
 }
@@ -997,8 +1120,7 @@ static const NSTimeInterval kAnimDuration   = 0.25;
         
         UIViewController *rootVC = [[UIViewController alloc] init];
         self.rootViewController = rootVC;
-
-        // Tab bar like IGG
+        
         self.tabBar = [[UISegmentedControl alloc] initWithItems:@[@"Search", @"Stored", @"Files"]];
         self.tabBar.frame = CGRectMake(10, 40, frame.size.width - 20, 40);
         self.tabBar.selectedSegmentIndex = 0;
@@ -1030,12 +1152,23 @@ static const NSTimeInterval kAnimDuration   = 0.25;
         self.fileManagerView.hidden = YES;
         [rootVC.view addSubview:self.fileManagerView];
 
+        self.fileEditorView = [[FileEditorView alloc] initWithFrame:contentFrame];
+        self.fileEditorView.host = self;
+        self.fileEditorView.hidden = YES;
+        [rootVC.view addSubview:self.fileEditorView];
+
         self.editView = [[EditView alloc] initWithFrame:CGRectMake((frame.size.width - 300)/2, (frame.size.height - 300)/2, 300, 300)];
         self.editView.host = self;
         self.editView.hidden = YES;
         [rootVC.view addSubview:self.editView];
     }
     return self;
+}
+
+- (void)showFileEditor:(NSString *)path {
+    [self.fileEditorView loadFile:path];
+    self.fileEditorView.hidden = NO;
+    [self.rootViewController.view bringSubviewToFront:self.fileEditorView];
 }
 
 - (void)tabChanged:(UISegmentedControl *)sender {
