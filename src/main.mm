@@ -107,6 +107,14 @@ static NSString* readValueAsString(uintptr_t address, int type) {
 // split into two specialised panels: one for memory search,
 // one for point scan.  No HTML, no JS bridge, no Python —
 // just UITableView + UISegmentedControl + UITextField.
+@interface EditView : UIView
+@property (nonatomic, weak) UIWindow *host;
+@property (nonatomic, assign) uintptr_t targetAddress;
+@property (nonatomic, assign) int targetType;
+@property (nonatomic, strong) UITextField *tfValue;
+- (void)setupWithAddress:(uintptr_t)address type:(int)type;
+@end
+
 @interface MemorySearchView : UIView <UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, weak) UIWindow *host;
 @property (nonatomic, strong) UISegmentedControl *scType;
@@ -129,11 +137,22 @@ static NSString* readValueAsString(uintptr_t address, int type) {
 - (void)reload;
 @end
 
+@interface FileManagerView : UIView <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, weak) UIWindow *host;
+@property (nonatomic, strong) NSString *currentPath;
+@property (nonatomic, strong) NSArray *files;
+@property (nonatomic, strong) UITableView *tableView;
+- (void)reload;
+@end
+
 @interface PanelWindow : UIWindow
 @property (nonatomic, strong) MemorySearchView *searchView;
 @property (nonatomic, strong) PointScanView *pointScanView;
+@property (nonatomic, strong) FileManagerView *fileManagerView;
+@property (nonatomic, strong) EditView *editView;
+@property (nonatomic, strong) UISegmentedControl *tabBar;
 - (void)showFeature:(NSInteger)featureID;
-- (void)bgTapped:(UITapGestureRecognizer *)sender;
+- (void)showEditForAddress:(uintptr_t)address type:(int)type;
 @end
 
 // ============================================================
@@ -239,8 +258,24 @@ static const NSTimeInterval kAnimDuration   = 0.25;
         self.btnPointScan.contentEdgeInsets = UIEdgeInsetsMake(0, 16, 0, 16);
         [self.btnPointScan addTarget:self action:@selector(optionPointScanTapped) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:self.btnPointScan];
+
+        UIButton *btnFile = [UIButton buttonWithType:UIButtonTypeSystem];
+        btnFile.frame = CGRectMake(0, optionY2 + kOptionHeight + kOptionVerticalGap, kExpandedWidth, kOptionHeight);
+        btnFile.alpha = 0.0;
+        btnFile.tag = 100; // FileManager tag
+        [btnFile setTitle:@"📂  Files" forState:UIControlStateNormal];
+        [btnFile setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        btnFile.titleLabel.font = optionFont;
+        btnFile.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
+        btnFile.contentEdgeInsets = UIEdgeInsetsMake(0, 16, 0, 16);
+        [btnFile addTarget:self action:@selector(optionFileManagerTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:btnFile];
     }
     return self;
+}
+
+- (void)optionFileManagerTapped {
+    [self openFeature:2];
 }
 
 - (void)handlePan:(UIPanGestureRecognizer *)sender {
@@ -323,6 +358,10 @@ static const NSTimeInterval kAnimDuration   = 0.25;
             self.btnFloat.layer.cornerRadius = kExpandedCircleSize / 2.0;
             self.btnMemorySearch.alpha = 1.0;
             self.btnPointScan.alpha   = 1.0;
+            
+            UIButton *btnFile = (UIButton *)[self viewWithTag:100];
+            if (btnFile) btnFile.alpha = 1.0;
+
             if (self.hostWindow != nil) {
                 self.hostWindow.frame = newWf;
             }
@@ -360,6 +399,10 @@ static const NSTimeInterval kAnimDuration   = 0.25;
             self.btnFloat.layer.cornerRadius = kCollapsedSize / 2.0;
             self.btnMemorySearch.alpha = 0.0;
             self.btnPointScan.alpha   = 0.0;
+            
+            UIButton *btnFile = (UIButton *)[self viewWithTag:100];
+            if (btnFile) btnFile.alpha = 0.0;
+
             if (self.hostWindow != nil) {
                 self.hostWindow.frame = newWf;
             }
@@ -455,34 +498,13 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
-        // Visual style — match IGG-style dark theme.
-        self.backgroundColor = [UIColor colorWithRed:0.07 green:0.07 blue:0.07 alpha:0.95];
-        self.opaque = NO;
-        self.layer.cornerRadius = 12.0;
-        self.layer.masksToBounds = YES;
-        self.layer.borderWidth = 0.5;
-        self.layer.borderColor = [UIColor colorWithWhite:0.3 alpha:1.0].CGColor;
+        self.backgroundColor = [UIColor clearColor];
+        CGFloat w = frame.size.width;
+        CGFloat h = frame.size.height;
 
-        // Header like IGG
-        UILabel *headerLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 15, 300, 30)];
-        headerLabel.text = @"Search Results";
-        headerLabel.textColor = [UIColor whiteColor];
-        headerLabel.font = [UIFont boldSystemFontOfSize:22];
-        [self addSubview:headerLabel];
-
-        self.btnClose = [UIButton buttonWithType:UIButtonTypeCustom];
-        self.btnClose.frame = CGRectMake(365, 15, 30, 30);
-        self.btnClose.backgroundColor = [UIColor colorWithRed:0.8 green:0.2 blue:0.2 alpha:1.0];
-        self.btnClose.layer.cornerRadius = 8.0;
-        [self.btnClose setTitle:@"✕" forState:UIControlStateNormal];
-        [self.btnClose setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-        [self.btnClose addTarget:self action:@selector(onCloseTapped) forControlEvents:UIControlEventTouchUpInside];
-        [self addSubview:self.btnClose];
-
-        // ---- Type selector (i32 / i64 / float / double) ----
         self.scType = [[UISegmentedControl alloc] initWithItems:@[@"i32", @"i64", @"f32", @"f64"]];
         self.scType.selectedSegmentIndex = 0;
-        self.scType.frame = CGRectMake(20, 60, 370, 32);
+        self.scType.frame = CGRectMake(10, 10, w - 20, 32);
         self.scType.backgroundColor = [UIColor colorWithWhite:0.2 alpha:1.0];
         self.scType.selectedSegmentTintColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:1.0];
         NSDictionary *attr = @{NSForegroundColorAttributeName: [UIColor whiteColor]};
@@ -490,58 +512,48 @@ static const NSTimeInterval kAnimDuration   = 0.25;
         [self.scType setTitleTextAttributes:attr forState:UIControlStateSelected];
         [self addSubview:self.scType];
 
-        // ---- Value input + Search button ----
-        UIView *searchBarBg = [[UIView alloc] initWithFrame:CGRectMake(20, 105, 370, 44)];
+        UIView *searchBarBg = [[UIView alloc] initWithFrame:CGRectMake(10, 55, w - 20, 44)];
         searchBarBg.backgroundColor = [UIColor colorWithWhite:0.15 alpha:1.0];
         searchBarBg.layer.cornerRadius = 8.0;
         [self addSubview:searchBarBg];
 
-        self.tfValue = [[UITextField alloc] initWithFrame:CGRectMake(30, 105, 260, 44)];
+        self.tfValue = [[UITextField alloc] initWithFrame:CGRectMake(20, 55, w - 120, 44)];
         self.tfValue.backgroundColor = [UIColor clearColor];
         self.tfValue.textColor = [UIColor whiteColor];
         self.tfValue.placeholder = @"Enter value...";
         self.tfValue.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
-        self.tfValue.spellCheckingType = UITextSpellCheckingTypeNo;
-        self.tfValue.autocapitalizationType = UITextAutocapitalizationTypeNone;
-        self.tfValue.autocorrectionType = UITextAutocorrectionTypeNo;
         [self addSubview:self.tfValue];
 
         self.btnSearch = [UIButton buttonWithType:UIButtonTypeCustom];
-        self.btnSearch.frame = CGRectMake(300, 105, 80, 44);
+        self.btnSearch.frame = CGRectMake(w - 100, 55, 90, 44);
         [self.btnSearch setTitle:@"Search" forState:UIControlStateNormal];
         [self.btnSearch setTitleColor:[UIColor colorWithRed:0.0 green:0.6 blue:1.0 alpha:1.0] forState:UIControlStateNormal];
-        self.btnSearch.titleLabel.font = [UIFont boldSystemFontOfSize:16];
         [self.btnSearch addTarget:self action:@selector(onSearchTapped) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:self.btnSearch];
 
-        // ---- Result label ----
-        self.lblResult = [[UILabel alloc] initWithFrame:CGRectMake(20, 155, 370, 20)];
+        self.lblResult = [[UILabel alloc] initWithFrame:CGRectMake(10, 105, w - 20, 20)];
         self.lblResult.textColor = [UIColor grayColor];
         self.lblResult.font = [UIFont systemFontOfSize:14];
         self.lblResult.text = @"Found 0";
         [self addSubview:self.lblResult];
 
-        // ---- Result table ----
-        self.tvResult = [[UITableView alloc] initWithFrame:CGRectMake(0, 180, 410, 330) style:UITableViewStylePlain];
+        self.tvResult = [[UITableView alloc] initWithFrame:CGRectMake(0, 130, w, h - 170) style:UITableViewStylePlain];
         self.tvResult.dataSource = self;
         self.tvResult.delegate = self;
         self.tvResult.backgroundColor = [UIColor clearColor];
-        self.tvResult.separatorStyle = UITableViewCellSeparatorStyleSingleLine;
         self.tvResult.separatorColor = [UIColor colorWithWhite:0.2 alpha:1.0];
-        self.tvResult.indicatorStyle = UIScrollViewIndicatorStyleWhite;
         [self.tvResult registerClass:[UITableViewCell class] forCellReuseIdentifier:@"searchCell"];
         [self addSubview:self.tvResult];
 
-        // ---- Action buttons (Reset / Refresh) ----
         self.btnReset = [UIButton buttonWithType:UIButtonTypeSystem];
-        self.btnReset.frame = CGRectMake(20, 520, 100, 30);
+        self.btnReset.frame = CGRectMake(10, h - 35, 100, 30);
         [self.btnReset setTitle:@"Reset" forState:UIControlStateNormal];
         [self.btnReset setTitleColor:[UIColor colorWithRed:1.0 green:0.3 blue:0.3 alpha:1.0] forState:UIControlStateNormal];
         [self.btnReset addTarget:self action:@selector(onResetTapped) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:self.btnReset];
 
         self.btnRefresh = [UIButton buttonWithType:UIButtonTypeSystem];
-        self.btnRefresh.frame = CGRectMake(290, 520, 100, 30);
+        self.btnRefresh.frame = CGRectMake(w - 110, h - 35, 100, 30);
         [self.btnRefresh setTitle:@"Refresh" forState:UIControlStateNormal];
         [self.btnRefresh addTarget:self action:@selector(onRefreshTapped) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:self.btnRefresh];
@@ -631,11 +643,12 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 #pragma mark - UITableViewDelegate
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    // Tap a row to pin it.
     std::vector<ScanResult>& results = MemoryScanner::getInstance().getResults();
     if ((NSUInteger)indexPath.row >= results.size()) return;
     ScanResult& r = results[indexPath.row];
-    MemoryScanner::getInstance().pinAddress(r.address, (ValueType)r.type);
+    if (gPanelWindow != nil) {
+        [gPanelWindow showEditForAddress:r.address type:(int)r.type];
+    }
 }
 
 @end
@@ -648,54 +661,116 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 // address with its current value, refreshed at 1Hz by a
 // background dispatch_source_t.  Tap a row to unpin.
 //
+@implementation EditView
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.backgroundColor = [UIColor colorWithRed:0.1 green:0.1 blue:0.1 alpha:0.95];
+        self.layer.cornerRadius = 12.0;
+        self.layer.masksToBounds = YES;
+
+        UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 20, 200, 30)];
+        titleLabel.text = @"Edit Value";
+        titleLabel.textColor = [UIColor whiteColor];
+        titleLabel.font = [UIFont boldSystemFontOfSize:20];
+        [self addSubview:titleLabel];
+
+        self.tfValue = [[UITextField alloc] initWithFrame:CGRectMake(20, 60, 260, 40)];
+        self.tfValue.backgroundColor = [UIColor colorWithWhite:0.2 alpha:1.0];
+        self.tfValue.textColor = [UIColor whiteColor];
+        self.tfValue.layer.cornerRadius = 8.0;
+        self.tfValue.textAlignment = NSTextAlignmentCenter;
+        [self addSubview:self.tfValue];
+
+        UIButton *btnModify = [UIButton buttonWithType:UIButtonTypeSystem];
+        btnModify.frame = CGRectMake(20, 110, 260, 44);
+        btnModify.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:1.0];
+        btnModify.layer.cornerRadius = 8.0;
+        [btnModify setTitle:@"Modify" forState:UIControlStateNormal];
+        [btnModify setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        [btnModify addTarget:self action:@selector(onModifyTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:btnModify];
+
+        UIButton *btnPin = [UIButton buttonWithType:UIButtonTypeSystem];
+        btnPin.frame = CGRectMake(20, 160, 260, 44);
+        btnPin.backgroundColor = [UIColor colorWithRed:0.2 green:0.2 blue:0.2 alpha:1.0];
+        btnPin.layer.cornerRadius = 8.0;
+        [btnPin setTitle:@"Pin / Stored" forState:UIControlStateNormal];
+        [btnPin setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        [btnPin addTarget:self action:@selector(onPinTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:btnPin];
+
+        UIButton *btnMemory = [UIButton buttonWithType:UIButtonTypeSystem];
+        btnMemory.frame = CGRectMake(20, 210, 260, 44);
+        btnMemory.backgroundColor = [UIColor colorWithRed:0.2 green:0.2 blue:0.2 alpha:1.0];
+        btnMemory.layer.cornerRadius = 8.0;
+        [btnMemory setTitle:@"Memory Viewer" forState:UIControlStateNormal];
+        [btnMemory setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        [btnMemory addTarget:self action:@selector(onMemoryTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:btnMemory];
+
+        UIButton *btnClose = [UIButton buttonWithType:UIButtonTypeSystem];
+        btnClose.frame = CGRectMake(20, 260, 260, 44);
+        [btnClose setTitle:@"Close" forState:UIControlStateNormal];
+        [btnClose addTarget:self action:@selector(onCloseTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:btnClose];
+    }
+    return self;
+}
+
+- (void)onMemoryTapped {
+    // Memory viewer placeholder
+    self.hidden = YES;
+}
+
+- (void)setupWithAddress:(uintptr_t)address type:(int)type {
+    self.targetAddress = address;
+    self.targetType = type;
+    NSString *val = readValueAsString(address, type);
+    self.tfValue.text = val;
+}
+
+- (void)onModifyTapped {
+    NSString *val = self.tfValue.text;
+    MemoryScanner::getInstance().modifyValue(self.targetAddress, (ValueType)self.targetType, [val UTF8String]);
+    self.hidden = YES;
+}
+
+- (void)onPinTapped {
+    MemoryScanner::getInstance().pinAddress(self.targetAddress, (ValueType)self.targetType);
+    self.hidden = YES;
+}
+
+- (void)onCloseTapped {
+    self.hidden = YES;
+}
+
+@end
+
 @implementation PointScanView
 
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
-        self.backgroundColor = [UIColor colorWithRed:0.07 green:0.07 blue:0.07 alpha:0.95];
-        self.opaque = NO;
-        self.layer.cornerRadius = 12.0;
-        self.layer.masksToBounds = YES;
-        self.layer.borderWidth = 0.5;
-        self.layer.borderColor = [UIColor colorWithWhite:0.3 alpha:1.0].CGColor;
+        self.backgroundColor = [UIColor clearColor];
+        CGFloat w = frame.size.width;
+        CGFloat h = frame.size.height;
 
-        // Header like IGG
-        UILabel *headerLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 15, 250, 30)];
-        headerLabel.text = @"Stored Addresses";
-        headerLabel.textColor = [UIColor whiteColor];
-        headerLabel.font = [UIFont boldSystemFontOfSize:22];
-        [self addSubview:headerLabel];
-
-        self.btnClose = [UIButton buttonWithType:UIButtonTypeCustom];
-        self.btnClose.frame = CGRectMake(305, 15, 30, 30);
-        self.btnClose.backgroundColor = [UIColor colorWithRed:0.8 green:0.2 blue:0.2 alpha:1.0];
-        self.btnClose.layer.cornerRadius = 8.0;
-        [self.btnClose setTitle:@"✕" forState:UIControlStateNormal];
-        [self.btnClose setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-        [self.btnClose addTarget:self action:@selector(onCloseTapped) forControlEvents:UIControlEventTouchUpInside];
-        [self addSubview:self.btnClose];
-
-        // Pinned count label
-        self.lblPinned = [[UILabel alloc] initWithFrame:CGRectMake(20, 55, 310, 20)];
+        self.lblPinned = [[UILabel alloc] initWithFrame:CGRectMake(10, 10, w - 20, 20)];
         self.lblPinned.textColor = [UIColor grayColor];
         self.lblPinned.font = [UIFont systemFontOfSize:14];
         self.lblPinned.text = @"Pinned 0";
         [self addSubview:self.lblPinned];
 
-        // Pinned table
-        self.tvPinned = [[UITableView alloc] initWithFrame:CGRectMake(0, 85, 350, 385) style:UITableViewStylePlain];
+        self.tvPinned = [[UITableView alloc] initWithFrame:CGRectMake(0, 40, w, h - 40) style:UITableViewStylePlain];
         self.tvPinned.dataSource = self;
         self.tvPinned.delegate = self;
         self.tvPinned.backgroundColor = [UIColor clearColor];
-        self.tvPinned.separatorStyle = UITableViewCellSeparatorStyleSingleLine;
         self.tvPinned.separatorColor = [UIColor colorWithWhite:0.2 alpha:1.0];
-        self.tvPinned.indicatorStyle = UIScrollViewIndicatorStyleWhite;
         [self.tvPinned registerClass:[UITableViewCell class] forCellReuseIdentifier:@"pinnedCell"];
         [self addSubview:self.tvPinned];
 
-        // 1Hz refresh timer: re-read every pinned address on a
-        // background queue, then reload the table on main.
         self.refreshTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
                                                     dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0));
         dispatch_source_set_timer(self.refreshTimer,
@@ -765,12 +840,12 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 #pragma mark - UITableViewDelegate
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    // Tap a row to unpin.
     std::vector<PinnedAddress> pinned = MemoryScanner::getInstance().copyPinnedAddresses();
     if ((NSUInteger)indexPath.row >= pinned.size()) return;
     PinnedAddress& p = pinned[indexPath.row];
-    MemoryScanner::getInstance().unpinAddress(p.address);
-    [self reload];
+    if (gPanelWindow != nil) {
+        [gPanelWindow showEditForAddress:p.address type:(int)p.type];
+    }
 }
 
 @end
@@ -786,53 +861,123 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 // the window and re-shows the floating AG chip — same UX as
 // the old WKWebView's bgTapped: behaviour.
 //
+@implementation FileManagerView
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.backgroundColor = [UIColor colorWithRed:0.07 green:0.07 blue:0.07 alpha:1.0];
+        self.currentPath = @"/";
+        self.tableView = [[UITableView alloc] initWithFrame:self.bounds style:UITableViewStylePlain];
+        self.tableView.dataSource = self;
+        self.tableView.delegate = self;
+        self.tableView.backgroundColor = [UIColor clearColor];
+        [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:@"fileCell"];
+        [self addSubview:self.tableView];
+        [self reload];
+    }
+    return self;
+}
+- (void)reload {
+    NSError *error;
+    self.files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:self.currentPath error:&error];
+    [self.tableView reloadData];
+}
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return self.files.count;
+}
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"fileCell" forIndexPath:indexPath];
+    cell.backgroundColor = [UIColor clearColor];
+    cell.textLabel.textColor = [UIColor whiteColor];
+    cell.textLabel.text = self.files[indexPath.row];
+    return cell;
+}
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    NSString *name = self.files[indexPath.row];
+    NSString *newPath = [self.currentPath stringByAppendingPathComponent:name];
+    BOOL isDir;
+    if ([[NSFileManager defaultManager] fileExistsAtPath:newPath isDirectory:&isDir] && isDir) {
+        self.currentPath = newPath;
+        [self reload];
+    }
+}
+@end
+
 @implementation PanelWindow
 
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
         self.windowLevel = UIWindowLevelAlert + 99;
-        self.backgroundColor = [UIColor clearColor];
-        self.userInteractionEnabled = YES;
-
+        self.backgroundColor = [UIColor blackColor];
+        
         UIViewController *rootVC = [[UIViewController alloc] init];
-        rootVC.view.opaque = NO;
-        rootVC.view.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.4];
-        rootVC.view.userInteractionEnabled = YES;
         self.rootViewController = rootVC;
 
-        // MemorySearchView — 410x560 centered
-        CGRect searchFrame = CGRectMake((frame.size.width  - 410) / 2.0,
-                                        (frame.size.height - 560) / 2.0,
-                                        410, 560);
-        self.searchView = [[MemorySearchView alloc] initWithFrame:searchFrame];
+        // Tab bar like IGG
+        self.tabBar = [[UISegmentedControl alloc] initWithItems:@[@"Search", @"Stored", @"Files"]];
+        self.tabBar.frame = CGRectMake(10, 40, frame.size.width - 20, 40);
+        self.tabBar.selectedSegmentIndex = 0;
+        [self.tabBar addTarget:self action:@selector(tabChanged:) forControlEvents:UIControlEventValueChanged];
+        [rootVC.view addSubview:self.tabBar];
+
+        UIButton *btnClose = [UIButton buttonWithType:UIButtonTypeCustom];
+        btnClose.frame = CGRectMake(frame.size.width - 50, 40, 40, 40);
+        btnClose.backgroundColor = [UIColor colorWithRed:1.0 green:0.2 blue:0.2 alpha:1.0];
+        btnClose.layer.cornerRadius = 20;
+        [btnClose setTitle:@"✕" forState:UIControlStateNormal];
+        [btnClose setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        [btnClose addTarget:self action:@selector(closePanel) forControlEvents:UIControlEventTouchUpInside];
+        [rootVC.view addSubview:btnClose];
+
+        CGRect contentFrame = CGRectMake(0, 90, frame.size.width, frame.size.height - 90);
+        
+        self.searchView = [[MemorySearchView alloc] initWithFrame:contentFrame];
         self.searchView.host = self;
-        self.searchView.hidden = YES;
         [rootVC.view addSubview:self.searchView];
 
-        // PointScanView — 350x480 centered
-        CGRect pointFrame  = CGRectMake((frame.size.width  - 350) / 2.0,
-                                        (frame.size.height - 480) / 2.0,
-                                        350, 480);
-        self.pointScanView = [[PointScanView alloc] initWithFrame:pointFrame];
+        self.pointScanView = [[PointScanView alloc] initWithFrame:contentFrame];
         self.pointScanView.host = self;
         self.pointScanView.hidden = YES;
         [rootVC.view addSubview:self.pointScanView];
 
-        // Tap outside the visible panel to close.
-        UITapGestureRecognizer *bgTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(bgTapped:)];
-        bgTap.cancelsTouchesInView = NO;
-        [rootVC.view addGestureRecognizer:bgTap];
+        self.fileManagerView = [[FileManagerView alloc] initWithFrame:contentFrame];
+        self.fileManagerView.host = self;
+        self.fileManagerView.hidden = YES;
+        [rootVC.view addSubview:self.fileManagerView];
+
+        self.editView = [[EditView alloc] initWithFrame:CGRectMake((frame.size.width - 300)/2, (frame.size.height - 300)/2, 300, 300)];
+        self.editView.host = self;
+        self.editView.hidden = YES;
+        [rootVC.view addSubview:self.editView];
     }
     return self;
 }
 
+- (void)tabChanged:(UISegmentedControl *)sender {
+    [self showFeature:sender.selectedSegmentIndex];
+}
+
 - (void)showFeature:(NSInteger)featureID {
-    self.searchView.hidden    = (featureID != 0);
+    self.searchView.hidden = (featureID != 0);
     self.pointScanView.hidden = (featureID != 1);
-    [self.searchView reload];
-    [self.pointScanView reload];
+    self.fileManagerView.hidden = (featureID != 2);
+    self.tabBar.selectedSegmentIndex = featureID;
     self.hidden = NO;
+}
+
+- (void)showEditForAddress:(uintptr_t)address type:(int)type {
+    [self.editView setupWithAddress:address type:type];
+    self.editView.hidden = NO;
+    [self.rootViewController.view bringSubviewToFront:self.editView];
+}
+
+- (void)closePanel {
+    self.hidden = YES;
+    if (gFloatingWindow != nil) {
+        gFloatingWindow.hidden = NO;
+    }
 }
 
 - (void)bgTapped:(UITapGestureRecognizer *)sender {
