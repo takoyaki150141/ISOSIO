@@ -1071,8 +1071,9 @@ static const NSTimeInterval kAnimDuration   = 0.25;
         
         [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
         
-        UIViewController *root = [UIApplication sharedApplication].keyWindow.rootViewController;
-        [root presentViewController:alert animated:YES completion:nil];
+        if (self.host != nil) {
+            [((PanelWindow *)self.host).rootViewController presentViewController:alert animated:YES completion:nil];
+        }
     }
 }
 
@@ -1092,8 +1093,9 @@ static const NSTimeInterval kAnimDuration   = 0.25;
     
     [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     
-    UIViewController *root = [UIApplication sharedApplication].keyWindow.rootViewController;
-    [root presentViewController:alert animated:YES completion:nil];
+    if (self.host != nil) {
+        [((PanelWindow *)self.host).rootViewController presentViewController:alert animated:YES completion:nil];
+    }
 }
 
 - (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
