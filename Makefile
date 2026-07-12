@@ -7,8 +7,9 @@ LIBRARY_NAME = MyGameCheat
 
 MyGameCheat_FILES = src/main.mm src/MemoryScanner.cpp src/SpeedHack.cpp fishhook/fishhook.c
 MyGameCheat_CFLAGS = -fobjc-arc
-MyGameCheat_CXXFLAGS = -std=c++17
-MyGameCheat_OBJCXXFLAGS = -std=c++17
+MyGameCheat_CXXFLAGS = -std=c++17 -Wno-error
+MyGameCheat_OBJCFLAGS = -fobjc-arc
+MyGameCheat_OBJCXXFLAGS = -std=c++17 -fobjc-arc -Wno-error
 MyGameCheat_LDFLAGS = -Wl,-segalign,4000
 MyGameCheat_FRAMEWORKS = UIKit WebKit
 
