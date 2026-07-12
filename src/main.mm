@@ -511,69 +511,82 @@ static const NSTimeInterval kAnimDuration   = 0.25;
         CGFloat w = frame.size.width;
         CGFloat h = frame.size.height;
 
+        // IGG Style Colors
+        UIColor *accentBlue = [UIColor colorWithRed:0.0 green:0.47 blue:1.0 alpha:1.0];
+        UIColor *darkBg = [UIColor colorWithWhite:0.1 alpha:1.0];
+
         self.scType = [[UISegmentedControl alloc] initWithItems:@[@"i32", @"i64", @"f32", @"f64"]];
         self.scType.selectedSegmentIndex = 0;
         self.scType.frame = CGRectMake(10, 10, w - 20, 32);
-        self.scType.backgroundColor = [UIColor colorWithWhite:0.2 alpha:1.0];
-        self.scType.selectedSegmentTintColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:1.0];
-        NSDictionary *attr = @{NSForegroundColorAttributeName: [UIColor whiteColor]};
+        self.scType.backgroundColor = darkBg;
+        self.scType.selectedSegmentTintColor = accentBlue;
+        NSDictionary *attr = @{NSForegroundColorAttributeName: [UIColor whiteColor], NSFontAttributeName: [UIFont boldSystemFontOfSize:13]};
         [self.scType setTitleTextAttributes:attr forState:UIControlStateNormal];
         [self.scType setTitleTextAttributes:attr forState:UIControlStateSelected];
         [self addSubview:self.scType];
 
-        UIView *searchBarBg = [[UIView alloc] initWithFrame:CGRectMake(10, 55, w - 20, 44)];
-        searchBarBg.backgroundColor = [UIColor colorWithWhite:0.15 alpha:1.0];
-        searchBarBg.layer.cornerRadius = 8.0;
+        UIView *searchBarBg = [[UIView alloc] initWithFrame:CGRectMake(10, 52, w - 20, 44)];
+        searchBarBg.backgroundColor = darkBg;
+        searchBarBg.layer.cornerRadius = 6.0;
         [self addSubview:searchBarBg];
 
-        self.tfValue = [[UITextField alloc] initWithFrame:CGRectMake(20, 55, w - 120, 44)];
+        self.tfValue = [[UITextField alloc] initWithFrame:CGRectMake(20, 52, w - 130, 44)];
         self.tfValue.backgroundColor = [UIColor clearColor];
         self.tfValue.textColor = [UIColor whiteColor];
-        self.tfValue.placeholder = @"Enter value...";
+        self.tfValue.font = [UIFont fontWithName:@"Menlo-Bold" size:16] ?: [UIFont boldSystemFontOfSize:16];
+        self.tfValue.placeholder = @"Value";
         self.tfValue.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
         
-        // Keyboard toolbar with Done button
         UIToolbar *toolbar = [[UIToolbar alloc] initWithFrame:CGRectMake(0, 0, w, 44)];
         UIBarButtonItem *flex = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
         UIBarButtonItem *done = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self.tfValue action:@selector(resignFirstResponder)];
         toolbar.items = @[flex, done];
         self.tfValue.inputAccessoryView = toolbar;
-        
         [self addSubview:self.tfValue];
 
         self.btnSearch = [UIButton buttonWithType:UIButtonTypeCustom];
-        self.btnSearch.frame = CGRectMake(w - 100, 55, 90, 44);
+        self.btnSearch.frame = CGRectMake(w - 100, 52, 90, 44);
+        self.btnSearch.backgroundColor = accentBlue;
+        self.btnSearch.layer.cornerRadius = 6.0;
         [self.btnSearch setTitle:@"Search" forState:UIControlStateNormal];
-        [self.btnSearch setTitleColor:[UIColor colorWithRed:0.0 green:0.6 blue:1.0 alpha:1.0] forState:UIControlStateNormal];
+        self.btnSearch.titleLabel.font = [UIFont boldSystemFontOfSize:14];
         [self.btnSearch addTarget:self action:@selector(onSearchTapped) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:self.btnSearch];
 
-        self.lblResult = [[UILabel alloc] initWithFrame:CGRectMake(10, 105, w - 20, 20)];
-        self.lblResult.textColor = [UIColor grayColor];
-        self.lblResult.font = [UIFont systemFontOfSize:14];
-        self.lblResult.text = @"Found 0";
+        self.lblResult = [[UILabel alloc] initWithFrame:CGRectMake(15, 105, w - 30, 20)];
+        self.lblResult.textColor = [UIColor lightGrayColor];
+        self.lblResult.font = [UIFont fontWithName:@"Menlo-Regular" size:12] ?: [UIFont systemFontOfSize:12];
+        self.lblResult.text = @"Ready";
         [self addSubview:self.lblResult];
 
-        self.tvResult = [[UITableView alloc] initWithFrame:CGRectMake(0, 130, w, h - 170) style:UITableViewStylePlain];
+        self.tvResult = [[UITableView alloc] initWithFrame:CGRectMake(0, 130, w, h - 175) style:UITableViewStylePlain];
         self.tvResult.dataSource = self;
         self.tvResult.delegate = self;
         self.tvResult.backgroundColor = [UIColor clearColor];
         self.tvResult.separatorColor = [UIColor colorWithWhite:0.2 alpha:1.0];
+        self.tvResult.rowHeight = 44;
         [self.tvResult registerClass:[UITableViewCell class] forCellReuseIdentifier:@"searchCell"];
         [self addSubview:self.tvResult];
 
+        // Bottom toolbar area
+        UIView *bottomBar = [[UIView alloc] initWithFrame:CGRectMake(0, h - 45, w, 45)];
+        bottomBar.backgroundColor = [UIColor colorWithWhite:0.05 alpha:1.0];
+        [self addSubview:bottomBar];
+
         self.btnReset = [UIButton buttonWithType:UIButtonTypeSystem];
-        self.btnReset.frame = CGRectMake(10, h - 35, 100, 30);
+        self.btnReset.frame = CGRectMake(10, 7, 80, 30);
         [self.btnReset setTitle:@"Reset" forState:UIControlStateNormal];
-        [self.btnReset setTitleColor:[UIColor colorWithRed:1.0 green:0.3 blue:0.3 alpha:1.0] forState:UIControlStateNormal];
+        [self.btnReset setTitleColor:[UIColor colorWithRed:1.0 green:0.2 blue:0.2 alpha:1.0] forState:UIControlStateNormal];
+        self.btnReset.titleLabel.font = [UIFont boldSystemFontOfSize:14];
         [self.btnReset addTarget:self action:@selector(onResetTapped) forControlEvents:UIControlEventTouchUpInside];
-        [self addSubview:self.btnReset];
+        [bottomBar addSubview:self.btnReset];
 
         self.btnRefresh = [UIButton buttonWithType:UIButtonTypeSystem];
-        self.btnRefresh.frame = CGRectMake(w - 110, h - 35, 100, 30);
+        self.btnRefresh.frame = CGRectMake(w - 90, 7, 80, 30);
         [self.btnRefresh setTitle:@"Refresh" forState:UIControlStateNormal];
+        self.btnRefresh.titleLabel.font = [UIFont boldSystemFontOfSize:14];
         [self.btnRefresh addTarget:self action:@selector(onRefreshTapped) forControlEvents:UIControlEventTouchUpInside];
-        [self addSubview:self.btnRefresh];
+        [bottomBar addSubview:self.btnRefresh];
     }
     return self;
 }
@@ -630,9 +643,7 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"searchCell" forIndexPath:indexPath];
     cell.backgroundColor = [UIColor clearColor];
-    cell.contentView.backgroundColor = [UIColor clearColor];
-    cell.textLabel.textColor = [UIColor whiteColor];
-    cell.textLabel.font = [UIFont fontWithName:@"Menlo-Regular" size:14] ?: [UIFont systemFontOfSize:14];
+    cell.selectionStyle = UITableViewCellSelectionStyleGray;
     
     std::vector<ScanResult>& results = MemoryScanner::getInstance().getResults();
     if ((NSUInteger)indexPath.row >= results.size()) return cell;
@@ -641,31 +652,33 @@ static const NSTimeInterval kAnimDuration   = 0.25;
     NSString *addr = [NSString stringWithFormat:@"0x%llX", (unsigned long long)r.address];
     NSString *val  = readValueAsString(r.address, (int)r.type);
     
-    // IGG style: Address on left, Value on right with a badge
+    // Address Label (Left)
     cell.textLabel.text = addr;
+    cell.textLabel.textColor = [UIColor colorWithWhite:0.7 alpha:1.0];
+    cell.textLabel.font = [UIFont fontWithName:@"Menlo-Regular" size:13] ?: [UIFont systemFontOfSize:13];
     
-    UILabel *valLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 120, 30)];
+    // Value and Badge Container (Right)
+    UIView *accView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 180, 44)];
+    
+    UILabel *valLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 140, 44)];
     valLabel.text = val;
     valLabel.textColor = [UIColor whiteColor];
     valLabel.textAlignment = NSTextAlignmentRight;
-    valLabel.font = [UIFont boldSystemFontOfSize:14];
+    valLabel.font = [UIFont fontWithName:@"Menlo-Bold" size:14] ?: [UIFont boldSystemFontOfSize:14];
+    [accView addSubview:valLabel];
     
-    UIView *accessoryView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 160, 30)];
-    [accessoryView addSubview:valLabel];
-    
-    // Type badge like "i32" in blue
-    UILabel *typeBadge = [[UILabel alloc] initWithFrame:CGRectMake(125, 5, 30, 20)];
+    UILabel *badge = [[UILabel alloc] initWithFrame:CGRectMake(145, 12, 30, 20)];
     NSArray *types = @[@"i32", @"i64", @"f32", @"f64"];
-    typeBadge.text = types[(int)r.type];
-    typeBadge.textColor = [UIColor whiteColor];
-    typeBadge.backgroundColor = [UIColor colorWithRed:0.0 green:0.4 blue:0.8 alpha:1.0];
-    typeBadge.font = [UIFont boldSystemFontOfSize:10];
-    typeBadge.textAlignment = NSTextAlignmentCenter;
-    typeBadge.layer.cornerRadius = 4.0;
-    typeBadge.layer.masksToBounds = YES;
-    [accessoryView addSubview:typeBadge];
+    badge.text = types[(int)r.type];
+    badge.textColor = [UIColor whiteColor];
+    badge.backgroundColor = [UIColor colorWithRed:0.0 green:0.47 blue:1.0 alpha:1.0];
+    badge.font = [UIFont boldSystemFontOfSize:10];
+    badge.textAlignment = NSTextAlignmentCenter;
+    badge.layer.cornerRadius = 4.0;
+    badge.layer.masksToBounds = YES;
+    [accView addSubview:badge];
     
-    cell.accessoryView = accessoryView;
+    cell.accessoryView = accView;
     return cell;
 }
 
@@ -699,20 +712,25 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
-        self.backgroundColor = [UIColor colorWithRed:0.1 green:0.1 blue:0.1 alpha:0.95];
-        self.layer.cornerRadius = 12.0;
-        self.layer.masksToBounds = YES;
+        self.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.98];
+        self.layer.cornerRadius = 10.0;
+        self.layer.borderWidth = 1.0;
+        self.layer.borderColor = [UIColor colorWithWhite:0.3 alpha:1.0].CGColor;
 
-        UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 20, 200, 30)];
-        titleLabel.text = @"Edit Value";
+        UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 15, 300, 30)];
+        titleLabel.text = @"EDIT VALUE";
+        titleLabel.textAlignment = NSTextAlignmentCenter;
         titleLabel.textColor = [UIColor whiteColor];
-        titleLabel.font = [UIFont boldSystemFontOfSize:20];
+        titleLabel.font = [UIFont boldSystemFontOfSize:14];
         [self addSubview:titleLabel];
 
-        self.tfValue = [[UITextField alloc] initWithFrame:CGRectMake(20, 60, 260, 40)];
-        self.tfValue.backgroundColor = [UIColor colorWithWhite:0.2 alpha:1.0];
-        self.tfValue.textColor = [UIColor whiteColor];
-        self.tfValue.layer.cornerRadius = 8.0;
+        self.tfValue = [[UITextField alloc] initWithFrame:CGRectMake(20, 55, 260, 44)];
+        self.tfValue.backgroundColor = [UIColor blackColor];
+        self.tfValue.textColor = [UIColor colorWithRed:0.0 green:1.0 blue:0.0 alpha:1.0];
+        self.tfValue.font = [UIFont fontWithName:@"Menlo-Bold" size:20] ?: [UIFont boldSystemFontOfSize:20];
+        self.tfValue.layer.cornerRadius = 4.0;
+        self.tfValue.layer.borderWidth = 1.0;
+        self.tfValue.layer.borderColor = [UIColor colorWithWhite:0.2 alpha:1.0].CGColor;
         self.tfValue.textAlignment = NSTextAlignmentCenter;
         self.tfValue.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
         
@@ -721,39 +739,43 @@ static const NSTimeInterval kAnimDuration   = 0.25;
         UIBarButtonItem *done = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self.tfValue action:@selector(resignFirstResponder)];
         toolbar.items = @[flex, done];
         self.tfValue.inputAccessoryView = toolbar;
-        
         [self addSubview:self.tfValue];
 
-        UIButton *btnModify = [UIButton buttonWithType:UIButtonTypeSystem];
+        UIColor *accentBlue = [UIColor colorWithRed:0.0 green:0.47 blue:1.0 alpha:1.0];
+
+        UIButton *btnModify = [UIButton buttonWithType:UIButtonTypeCustom];
         btnModify.frame = CGRectMake(20, 110, 260, 44);
-        btnModify.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:1.0];
-        btnModify.layer.cornerRadius = 8.0;
-        [btnModify setTitle:@"Modify" forState:UIControlStateNormal];
-        [btnModify setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        btnModify.backgroundColor = accentBlue;
+        btnModify.layer.cornerRadius = 6.0;
+        [btnModify setTitle:@"MODIFY" forState:UIControlStateNormal];
+        btnModify.titleLabel.font = [UIFont boldSystemFontOfSize:15];
         [btnModify addTarget:self action:@selector(onModifyTapped) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:btnModify];
 
-        UIButton *btnPin = [UIButton buttonWithType:UIButtonTypeSystem];
+        UIButton *btnPin = [UIButton buttonWithType:UIButtonTypeCustom];
         btnPin.frame = CGRectMake(20, 160, 260, 44);
-        btnPin.backgroundColor = [UIColor colorWithRed:0.2 green:0.2 blue:0.2 alpha:1.0];
-        btnPin.layer.cornerRadius = 8.0;
-        [btnPin setTitle:@"Pin / Stored" forState:UIControlStateNormal];
-        [btnPin setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        btnPin.backgroundColor = [UIColor colorWithRed:1.0 green:0.75 blue:0.0 alpha:1.0];
+        btnPin.layer.cornerRadius = 6.0;
+        [btnPin setTitle:@"PIN TO STORED" forState:UIControlStateNormal];
+        [btnPin setTitleColor:[UIColor blackColor] forState:UIControlStateNormal];
+        btnPin.titleLabel.font = [UIFont boldSystemFontOfSize:15];
         [btnPin addTarget:self action:@selector(onPinTapped) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:btnPin];
 
-        UIButton *btnMemory = [UIButton buttonWithType:UIButtonTypeSystem];
+        UIButton *btnMemory = [UIButton buttonWithType:UIButtonTypeCustom];
         btnMemory.frame = CGRectMake(20, 210, 260, 44);
-        btnMemory.backgroundColor = [UIColor colorWithRed:0.2 green:0.2 blue:0.2 alpha:1.0];
-        btnMemory.layer.cornerRadius = 8.0;
-        [btnMemory setTitle:@"Memory Viewer" forState:UIControlStateNormal];
-        [btnMemory setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        btnMemory.backgroundColor = [UIColor colorWithWhite:0.2 alpha:1.0];
+        btnMemory.layer.cornerRadius = 6.0;
+        [btnMemory setTitle:@"MEMORY VIEWER" forState:UIControlStateNormal];
+        btnMemory.titleLabel.font = [UIFont boldSystemFontOfSize:14];
         [btnMemory addTarget:self action:@selector(onMemoryTapped) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:btnMemory];
 
         UIButton *btnClose = [UIButton buttonWithType:UIButtonTypeSystem];
-        btnClose.frame = CGRectMake(20, 260, 260, 44);
-        [btnClose setTitle:@"Close" forState:UIControlStateNormal];
+        btnClose.frame = CGRectMake(20, 260, 260, 30);
+        [btnClose setTitle:@"CANCEL" forState:UIControlStateNormal];
+        [btnClose setTitleColor:[UIColor lightGrayColor] forState:UIControlStateNormal];
+        btnClose.titleLabel.font = [UIFont systemFontOfSize:13];
         [btnClose addTarget:self action:@selector(onCloseTapped) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:btnClose];
     }
@@ -855,10 +877,8 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"pinnedCell" forIndexPath:indexPath];
     cell.backgroundColor = [UIColor clearColor];
-    cell.contentView.backgroundColor = [UIColor clearColor];
-    cell.textLabel.textColor = [UIColor whiteColor];
-    cell.textLabel.font = [UIFont fontWithName:@"Menlo-Regular" size:14] ?: [UIFont systemFontOfSize:14];
-
+    cell.selectionStyle = UITableViewCellSelectionStyleGray;
+    
     std::vector<PinnedAddress> pinned = MemoryScanner::getInstance().copyPinnedAddresses();
     if ((NSUInteger)indexPath.row >= pinned.size()) return cell;
     PinnedAddress& p = pinned[indexPath.row];
@@ -867,14 +887,30 @@ static const NSTimeInterval kAnimDuration   = 0.25;
     NSString *val  = [NSString stringWithUTF8String:p.value.c_str()];
     
     cell.textLabel.text = addr;
+    cell.textLabel.textColor = [UIColor colorWithWhite:0.7 alpha:1.0];
+    cell.textLabel.font = [UIFont fontWithName:@"Menlo-Regular" size:13] ?: [UIFont systemFontOfSize:13];
     
-    UILabel *valLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 120, 30)];
+    UIView *accView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 180, 44)];
+    
+    UILabel *valLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 140, 44)];
     valLabel.text = val;
-    valLabel.textColor = [UIColor whiteColor];
+    valLabel.textColor = [UIColor colorWithRed:1.0 green:0.8 blue:0.0 alpha:1.0]; // Gold for pinned values
     valLabel.textAlignment = NSTextAlignmentRight;
-    valLabel.font = [UIFont boldSystemFontOfSize:14];
+    valLabel.font = [UIFont fontWithName:@"Menlo-Bold" size:14] ?: [UIFont boldSystemFontOfSize:14];
+    [accView addSubview:valLabel];
     
-    cell.accessoryView = valLabel;
+    UILabel *badge = [[UILabel alloc] initWithFrame:CGRectMake(145, 12, 30, 20)];
+    NSArray *types = @[@"i32", @"i64", @"f32", @"f64"];
+    badge.text = types[(int)p.type];
+    badge.textColor = [UIColor whiteColor];
+    badge.backgroundColor = [UIColor colorWithRed:0.0 green:0.47 blue:1.0 alpha:1.0];
+    badge.font = [UIFont boldSystemFontOfSize:10];
+    badge.textAlignment = NSTextAlignmentCenter;
+    badge.layer.cornerRadius = 4.0;
+    badge.layer.masksToBounds = YES;
+    [accView addSubview:badge];
+    
+    cell.accessoryView = accView;
     return cell;
 }
 
@@ -1018,8 +1054,7 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"fileCell" forIndexPath:indexPath];
     cell.backgroundColor = [UIColor clearColor];
-    cell.textLabel.textColor = [UIColor whiteColor];
-    cell.textLabel.font = [UIFont systemFontOfSize:14];
+    cell.selectionStyle = UITableViewCellSelectionStyleGray;
     
     NSString *name = self.files[indexPath.row];
     NSString *fullPath = [self.currentPath stringByAppendingPathComponent:name];
@@ -1030,6 +1065,7 @@ static const NSTimeInterval kAnimDuration   = 0.25;
     
     if (isDir) {
         cell.textLabel.text = [NSString stringWithFormat:@"📁  %@", name];
+        cell.textLabel.textColor = [UIColor colorWithRed:0.0 green:0.47 blue:1.0 alpha:1.0];
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     } else {
         unsigned long long size = [attrs fileSize];
@@ -1038,9 +1074,17 @@ static const NSTimeInterval kAnimDuration   = 0.25;
         else if (size > 1024) sizeStr = [NSString stringWithFormat:@"%.1f KB", size / 1024.0];
         else sizeStr = [NSString stringWithFormat:@"%llu B", size];
         
-        cell.textLabel.text = [NSString stringWithFormat:@"📄  %@ (%@)", name, sizeStr];
-        cell.accessoryType = UITableViewCellAccessoryNone;
+        cell.textLabel.text = [NSString stringWithFormat:@"📄  %@", name];
+        cell.textLabel.textColor = [UIColor whiteColor];
+        
+        UILabel *sizeLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 80, 44)];
+        sizeLabel.text = sizeStr;
+        sizeLabel.textColor = [UIColor grayColor];
+        sizeLabel.textAlignment = NSTextAlignmentRight;
+        sizeLabel.font = [UIFont systemFontOfSize:12];
+        cell.accessoryView = sizeLabel;
     }
+    cell.textLabel.font = [UIFont boldSystemFontOfSize:14];
     
     return cell;
 }
