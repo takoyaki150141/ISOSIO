@@ -522,6 +522,14 @@ static const NSTimeInterval kAnimDuration   = 0.25;
         self.tfValue.textColor = [UIColor whiteColor];
         self.tfValue.placeholder = @"Enter value...";
         self.tfValue.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
+        
+        // Keyboard toolbar with Done button
+        UIToolbar *toolbar = [[UIToolbar alloc] initWithFrame:CGRectMake(0, 0, w, 44)];
+        UIBarButtonItem *flex = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
+        UIBarButtonItem *done = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self.tfValue action:@selector(resignFirstResponder)];
+        toolbar.items = @[flex, done];
+        self.tfValue.inputAccessoryView = toolbar;
+        
         [self addSubview:self.tfValue];
 
         self.btnSearch = [UIButton buttonWithType:UIButtonTypeCustom];
@@ -564,14 +572,30 @@ static const NSTimeInterval kAnimDuration   = 0.25;
 - (void)reload {
     std::vector<ScanResult>& results = MemoryScanner::getInstance().getResults();
     self.lblResult.text = [NSString stringWithFormat:@"Found %lu", (unsigned long)results.size()];
+    
+    if (MemoryScanner::getInstance().getIsFirstScan()) {
+        [self.btnSearch setTitle:@"First Scan" forState:UIControlStateNormal];
+        self.scType.enabled = YES;
+    } else {
+        [self.btnSearch setTitle:@"Next Scan" forState:UIControlStateNormal];
+        self.scType.enabled = NO; // Lock type during refinement
+    }
+    
     [self.tvResult reloadData];
 }
 
 - (void)onSearchTapped {
     NSString *valueStr = self.tfValue.text;
     if (valueStr.length == 0) return;
-    int type = (int)self.scType.selectedSegmentIndex;
-    MemoryScanner::getInstance().firstScan((ValueType)type, [valueStr UTF8String]);
+    
+    [self.tfValue resignFirstResponder]; // Hide keyboard
+    
+    if (MemoryScanner::getInstance().getIsFirstScan()) {
+        int type = (int)self.scType.selectedSegmentIndex;
+        MemoryScanner::getInstance().firstScan((ValueType)type, [valueStr UTF8String]);
+    } else {
+        MemoryScanner::getInstance().nextScan([valueStr UTF8String]);
+    }
     [self reload];
 }
 
@@ -681,6 +705,14 @@ static const NSTimeInterval kAnimDuration   = 0.25;
         self.tfValue.textColor = [UIColor whiteColor];
         self.tfValue.layer.cornerRadius = 8.0;
         self.tfValue.textAlignment = NSTextAlignmentCenter;
+        self.tfValue.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
+        
+        UIToolbar *toolbar = [[UIToolbar alloc] initWithFrame:CGRectMake(0, 0, 300, 44)];
+        UIBarButtonItem *flex = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
+        UIBarButtonItem *done = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self.tfValue action:@selector(resignFirstResponder)];
+        toolbar.items = @[flex, done];
+        self.tfValue.inputAccessoryView = toolbar;
+        
         [self addSubview:self.tfValue];
 
         UIButton *btnModify = [UIButton buttonWithType:UIButtonTypeSystem];

@@ -77,7 +77,7 @@ public:
     std::vector<ScanResult>& getResults() { return results; }
 
 private:
-    MemoryScanner() : currentType(Type_i32) {}
+    MemoryScanner() : currentType(Type_i32), isFirstScan(true) {}
     ~MemoryScanner() {}
     MemoryScanner(const MemoryScanner&);
     MemoryScanner& operator=(const MemoryScanner&);
@@ -86,4 +86,9 @@ private:
     std::vector<LockedValue> lockedValues;
     std::vector<PinnedAddress> pinnedAddresses;
     ValueType currentType;
+    bool isFirstScan;
+
+public:
+    bool getIsFirstScan() const { return isFirstScan; }
+    void setIsFirstScan(bool b) { isFirstScan = b; }
 };

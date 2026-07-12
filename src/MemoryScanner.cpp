@@ -97,6 +97,7 @@ static void scanRegionBuffer(const uint8_t* buffer, size_t bufferSize, uintptr_t
 bool MemoryScanner::firstScan(ValueType type, const std::string& valueStr) {
     results.clear();
     currentType = type;
+    isFirstScan = false;
     
     std::vector<MemoryRegion> regions = getWritableRegions();
     
@@ -294,6 +295,7 @@ void MemoryScanner::updateLockedValues() {
 void MemoryScanner::clear() {
     results.clear();
     lockedValues.clear();
+    isFirstScan = true;
 }
 
 // ---------------------------------------------------------------
