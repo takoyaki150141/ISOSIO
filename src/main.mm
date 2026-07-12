@@ -866,32 +866,83 @@ static const NSTimeInterval kAnimDuration   = 0.25;
     self = [super initWithFrame:frame];
     if (self) {
         self.backgroundColor = [UIColor colorWithRed:0.07 green:0.07 blue:0.07 alpha:1.0];
-        self.currentPath = @"/";
-        self.tableView = [[UITableView alloc] initWithFrame:self.bounds style:UITableViewStylePlain];
+        
+        // Default to app's Documents directory
+        NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+        self.currentPath = [paths firstObject];
+
+        UIButton *btnBack = [UIButton buttonWithType:UIButtonTypeSystem];
+        btnBack.frame = CGRectMake(10, 5, 80, 30);
+        [btnBack setTitle:@"⬅ Back" forState:UIControlStateNormal];
+        [btnBack addTarget:self action:@selector(goBack) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:btnBack];
+
+        self.tableView = [[UITableView alloc] initWithFrame:CGRectMake(0, 40, frame.size.width, frame.size.height - 40) style:UITableViewStylePlain];
         self.tableView.dataSource = self;
         self.tableView.delegate = self;
         self.tableView.backgroundColor = [UIColor clearColor];
+        self.tableView.separatorColor = [UIColor colorWithWhite:0.2 alpha:1.0];
         [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:@"fileCell"];
         [self addSubview:self.tableView];
+        
         [self reload];
     }
     return self;
 }
+
+- (void)goBack {
+    if ([self.currentPath isEqualToString:@"/"]) return;
+    self.currentPath = [self.currentPath stringByDeletingLastPathComponent];
+    if ([self.currentPath isEqualToString:@""]) self.currentPath = @"/";
+    [self reload];
+}
+
 - (void)reload {
     NSError *error;
-    self.files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:self.currentPath error:&error];
+    NSArray *contents = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:self.currentPath error:&error];
+    // Filter out hidden files and sort
+    NSMutableArray *filtered = [NSMutableArray array];
+    for (NSString *name in contents) {
+        if (![name hasPrefix:@"."]) [filtered addObject:name];
+    }
+    self.files = [filtered sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
     [self.tableView reloadData];
 }
+
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     return self.files.count;
 }
+
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"fileCell" forIndexPath:indexPath];
     cell.backgroundColor = [UIColor clearColor];
     cell.textLabel.textColor = [UIColor whiteColor];
-    cell.textLabel.text = self.files[indexPath.row];
+    cell.textLabel.font = [UIFont systemFontOfSize:14];
+    
+    NSString *name = self.files[indexPath.row];
+    NSString *fullPath = [self.currentPath stringByAppendingPathComponent:name];
+    
+    BOOL isDir;
+    NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:fullPath error:nil];
+    [[NSFileManager defaultManager] fileExistsAtPath:fullPath isDirectory:&isDir];
+    
+    if (isDir) {
+        cell.textLabel.text = [NSString stringWithFormat:@"📁  %@", name];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    } else {
+        unsigned long long size = [attrs fileSize];
+        NSString *sizeStr;
+        if (size > 1024 * 1024) sizeStr = [NSString stringWithFormat:@"%.1f MB", size / (1024.0 * 1024.0)];
+        else if (size > 1024) sizeStr = [NSString stringWithFormat:@"%.1f KB", size / 1024.0];
+        else sizeStr = [NSString stringWithFormat:@"%llu B", size];
+        
+        cell.textLabel.text = [NSString stringWithFormat:@"📄  %@ (%@)", name, sizeStr];
+        cell.accessoryType = UITableViewCellAccessoryNone;
+    }
+    
     return cell;
 }
+
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     NSString *name = self.files[indexPath.row];
